@@ -39,10 +39,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.verticalScroll
 import com.grokapp.googlebookos.data.model.ChatMessage
 import com.grokapp.googlebookos.data.model.SessionSummary
 import com.grokapp.googlebookos.data.model.ToolCallInfo
 import com.grokapp.googlebookos.data.model.ToolStatus
+import com.grokapp.googlebookos.data.model.ProjectItem
+import com.grokapp.googlebookos.data.model.FsDirectoryItem
+import com.grokapp.googlebookos.data.model.FsListResponse
+import com.grokapp.googlebookos.util.StorageHelper
+import java.io.File
 import kotlinx.coroutines.launch
 
 @Composable
@@ -58,6 +67,26 @@ fun GrokWorkbenchScreen(
     var showRenameDialog by remember { mutableStateOf<String?>(null) }
     var renameInputText by remember { mutableStateOf("") }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+
+    val systemFolderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val path = StorageHelper.resolveTreeUriToPath(context, uri)
+            if (path != null) {
+                if (uiState.folderPickerTarget == FolderPickerTarget.SWITCH_PROJECT) {
+                    viewModel.setActiveCwd(path)
+                    viewModel.closeFolderPickerDialog()
+                    Toast.makeText(context, "已切换工作区: $path", Toast.LENGTH_SHORT).show()
+                } else {
+                    viewModel.setPendingParentDir(path)
+                    viewModel.closeFolderPickerDialog()
+                }
+            } else {
+                Toast.makeText(context, "无法解析所选目录路径", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     LaunchedEffect(uiState.errorMessage) {
         uiState.errorMessage?.let { msg ->
@@ -82,6 +111,8 @@ fun GrokWorkbenchScreen(
                         uiState = uiState,
                         onNewSession = { viewModel.startNewSession() },
                         onSelectSession = { viewModel.selectSession(it) },
+                        onNewProject = { viewModel.openNewProjectDialog() },
+                        onSwitchProject = { viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT) },
                         onRenameSession = { sid, currentTitle ->
                             renameInputText = currentTitle
                             showRenameDialog = sid
@@ -110,6 +141,7 @@ fun GrokWorkbenchScreen(
                     onReasoningSelect = { viewModel.setReasoning(it) },
                     onPermissionSelect = { viewModel.setPermission(it) },
                     onOpenSettings = { showServerDialog = true },
+                    onSwitchProject = { viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT) },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -132,6 +164,14 @@ fun GrokWorkbenchScreen(
                             },
                             onSelectSession = {
                                 viewModel.selectSession(it)
+                                scope.launch { drawerState.close() }
+                            },
+                            onNewProject = {
+                                viewModel.openNewProjectDialog()
+                                scope.launch { drawerState.close() }
+                            },
+                            onSwitchProject = {
+                                viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT)
                                 scope.launch { drawerState.close() }
                             },
                             onRenameSession = { sid, currentTitle ->
@@ -158,6 +198,7 @@ fun GrokWorkbenchScreen(
                     onReasoningSelect = { viewModel.setReasoning(it) },
                     onPermissionSelect = { viewModel.setPermission(it) },
                     onOpenSettings = { showServerDialog = true },
+                    onSwitchProject = { viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT) },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -250,13 +291,52 @@ fun GrokWorkbenchScreen(
             }
         )
     }
+
+    if (uiState.showNewProjectDialog) {
+        NewProjectDialog(
+            initialParentDir = uiState.pendingParentDir,
+            onDismiss = { viewModel.closeNewProjectDialog() },
+            onSelectParentFolder = {
+                viewModel.openFolderPickerDialog(FolderPickerTarget.NEW_PROJECT_PARENT, uiState.pendingParentDir)
+            },
+            onCreate = { name, parentDir, template, initGit, createReadme ->
+                viewModel.createNewProject(name, parentDir, template, initGit, createReadme)
+            }
+        )
+    }
+
+    if (uiState.showFolderPickerDialog) {
+        FolderPickerDialog(
+            uiState = uiState,
+            onDismiss = { viewModel.closeFolderPickerDialog() },
+            onSelectFolder = { selectedPath ->
+                if (uiState.folderPickerTarget == FolderPickerTarget.SWITCH_PROJECT) {
+                    viewModel.setActiveCwd(selectedPath)
+                    viewModel.closeFolderPickerDialog()
+                    Toast.makeText(context, "已切换工作区: $selectedPath", Toast.LENGTH_SHORT).show()
+                } else {
+                    viewModel.setPendingParentDir(selectedPath)
+                    viewModel.closeFolderPickerDialog()
+                }
+            },
+            onNavigateTo = { dirPath ->
+                viewModel.loadFsList(dirPath)
+            },
+            onLaunchSystemPicker = {
+                systemFolderPickerLauncher.launch(null)
+            }
+        )
+    }
 }
+
 
 @Composable
 fun SidebarContent(
     uiState: WorkbenchUiState,
     onNewSession: () -> Unit,
     onSelectSession: (String) -> Unit,
+    onNewProject: () -> Unit,
+    onSwitchProject: () -> Unit,
     onRenameSession: (String, String) -> Unit,
     onDeleteSession: (String) -> Unit,
     onToggleArchive: (String) -> Unit,
@@ -314,7 +394,96 @@ fun SidebarContent(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Project Workspace Card
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Column(modifier = Modifier.padding(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Folder,
+                            contentDescription = "Project",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = uiState.activeProjectName,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(
+                        onClick = onSwitchProject,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.SwapHoriz,
+                            contentDescription = "切换文件夹",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = uiState.activeCwd,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onNewProject,
+                        modifier = Modifier.weight(1f).height(32.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("新建项目", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = onSwitchProject,
+                        modifier = Modifier.weight(1f).height(32.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("打开目录", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
 
         // New Session Button
         Button(
@@ -504,6 +673,7 @@ fun MainChatArea(
     onReasoningSelect: (String) -> Unit,
     onPermissionSelect: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onSwitchProject: () -> Unit,
     onRenameCurrent: () -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
@@ -532,6 +702,32 @@ fun MainChatArea(
                         if (uiState.currentSessionId != null) {
                             IconButton(onClick = onRenameCurrent, modifier = Modifier.size(28.dp)) {
                                 Icon(Icons.Default.Edit, contentDescription = "Rename", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            onClick = onSwitchProject,
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Folder,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(13.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = uiState.activeProjectName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -1264,3 +1460,449 @@ fun QuickDropdownChip(
         }
     }
 }
+
+@Composable
+fun NewProjectDialog(
+    initialParentDir: String,
+    onDismiss: () -> Unit,
+    onSelectParentFolder: () -> Unit,
+    onCreate: (name: String, parentDir: String, template: String, initGit: Boolean, createReadme: Boolean) -> Unit
+) {
+    var projectName by remember { mutableStateOf("") }
+    var parentDir by remember { mutableStateOf(initialParentDir) }
+    var selectedTemplate by remember { mutableStateOf("empty") }
+    var initGit by remember { mutableStateOf(true) }
+    var createReadme by remember { mutableStateOf(true) }
+
+    LaunchedEffect(initialParentDir) {
+        parentDir = initialParentDir
+    }
+
+    val fullPathPreview = remember(projectName, parentDir) {
+        val cleanParent = if (parentDir.endsWith("/") && parentDir.length > 1) parentDir.dropLast(1) else parentDir
+        if (projectName.isBlank()) cleanParent else "$cleanParent/$projectName"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.CreateNewFolder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("新建项目", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Project Name
+                OutlinedTextField(
+                    value = projectName,
+                    onValueChange = { projectName = it.trim().replace(" ", "-") },
+                    label = { Text("项目名称") },
+                    placeholder = { Text("例如：MyAwesomeApp") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Parent Directory & Browse Button
+                Column {
+                    Text(
+                        text = "存放位置 (Googlebook OS 文件夹):",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = parentDir,
+                            onValueChange = { parentDir = it },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Button(
+                            onClick = onSelectParentFolder,
+                            contentPadding = PaddingValues(horizontal = 10.dp)
+                        ) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("浏览", fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                // Full Path Preview
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Text("完整路径预览：", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                        Text(
+                            text = fullPathPreview,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
+                // Template selection
+                Text("项目模版类型:", style = MaterialTheme.typography.labelMedium)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedTemplate == "empty",
+                        onClick = { selectedTemplate = "empty" },
+                        label = { Text("空白项目") }
+                    )
+                    FilterChip(
+                        selected = selectedTemplate == "android",
+                        onClick = { selectedTemplate = "android" },
+                        label = { Text("Android 应用") }
+                    )
+                    FilterChip(
+                        selected = selectedTemplate == "python",
+                        onClick = { selectedTemplate = "python" },
+                        label = { Text("Python 项目") }
+                    )
+                    FilterChip(
+                        selected = selectedTemplate == "web",
+                        onClick = { selectedTemplate = "web" },
+                        label = { Text("Web 前端") }
+                    )
+                }
+
+                // Checkboxes
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = initGit, onCheckedChange = { initGit = it })
+                    Text("初始化 Git 仓库 (git init)", style = MaterialTheme.typography.bodyMedium)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = createReadme, onCheckedChange = { createReadme = it })
+                    Text("生成 README.md 与 .gitignore", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (projectName.isNotBlank()) {
+                        onCreate(projectName, parentDir, selectedTemplate, initGit, createReadme)
+                    }
+                },
+                enabled = projectName.isNotBlank()
+            ) {
+                Text("创建并打开工作区")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+fun FolderPickerDialog(
+    uiState: WorkbenchUiState,
+    onDismiss: () -> Unit,
+    onSelectFolder: (String) -> Unit,
+    onNavigateTo: (String) -> Unit,
+    onLaunchSystemPicker: () -> Unit
+) {
+    var selectedTab by remember { mutableStateOf(0) } // 0: 目录浏览, 1: 已有项目
+    var showCreateSubfolderDialog by remember { mutableStateOf(false) }
+    var newSubfolderName by remember { mutableStateOf("") }
+
+    val currentPath = uiState.currentFsList?.currentPath ?: uiState.activeCwd
+    val parentPath = uiState.currentFsList?.parentPath
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("选择系统文件夹", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 500.dp)) {
+                // System Document Picker Action Button (Top highlight)
+                FilledTonalButton(
+                    onClick = onLaunchSystemPicker,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("📂 打开系统文件选择器 (SAF)")
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Quick Storage Bookmarks
+                Text("快捷位置:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val root = StorageHelper.getExternalStorageRoot()
+                    SuggestionChip(
+                        onClick = { onNavigateTo(StorageHelper.getDefaultCodesDir()) },
+                        label = { Text("⚡ Codes") }
+                    )
+                    SuggestionChip(
+                        onClick = { onNavigateTo(root) },
+                        label = { Text("🏠 内部存储") }
+                    )
+                    SuggestionChip(
+                        onClick = { onNavigateTo("$root/Download") },
+                        label = { Text("📥 Download") }
+                    )
+                    SuggestionChip(
+                        onClick = { onNavigateTo("$root/Documents") },
+                        label = { Text("📄 Documents") }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Tabs: 目录浏览 vs 已有项目
+                TabRow(selectedTabIndex = selectedTab) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = { Text("目录树浏览") }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = { Text("已有项目 (${uiState.recentProjects.size})") }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (selectedTab == 0) {
+                    // Current Path & Up navigation
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (parentPath != null) {
+                                IconButton(
+                                    onClick = { onNavigateTo(parentPath) },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.ArrowUpward, contentDescription = "上一级", modifier = Modifier.size(16.dp))
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                            Text(
+                                text = currentPath,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            IconButton(
+                                onClick = { showCreateSubfolderDialog = true },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.CreateNewFolder, contentDescription = "新建子文件夹", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (uiState.isFsLoading) {
+                        Box(modifier = Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        }
+                    } else {
+                        val dirs = uiState.currentFsList?.directories ?: emptyList()
+                        if (dirs.isEmpty()) {
+                            Box(modifier = Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                                Text("此目录下没有子文件夹", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp)
+                            ) {
+                                items(dirs) { dir ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onNavigateTo(dir.path) }
+                                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Folder,
+                                            contentDescription = null,
+                                            tint = if (dir.isHidden) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = dir.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = if (dir.isHidden) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.weight(1f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (dir.isGit) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    "git",
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
+                                    }
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Recent / Detected Projects List
+                    if (uiState.recentProjects.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
+                            Text("未发现已有项目，可直接浏览目录选择", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(250.dp)
+                        ) {
+                            items(uiState.recentProjects) { proj ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                        .clickable { onSelectFolder(proj.path) },
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (proj.path == uiState.activeCwd)
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                        else MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(proj.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                            Text(proj.path, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Monospace)
+                                        }
+                                        if (proj.isGit) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text("Git", modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), fontSize = 10.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSelectFolder(currentPath) }) {
+                Text("选择当前文件夹")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+
+    if (showCreateSubfolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateSubfolderDialog = false },
+            title = { Text("新建子文件夹") },
+            text = {
+                OutlinedTextField(
+                    value = newSubfolderName,
+                    onValueChange = { newSubfolderName = it.trim() },
+                    label = { Text("文件夹名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newSubfolderName.isNotBlank()) {
+                            val newPath = "$currentPath/$newSubfolderName"
+                            StorageHelper.createLocalProject(newPath, "empty", false)
+                            showCreateSubfolderDialog = false
+                            newSubfolderName = ""
+                            onNavigateTo(newPath)
+                        }
+                    },
+                    enabled = newSubfolderName.isNotBlank()
+                ) {
+                    Text("创建")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateSubfolderDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+

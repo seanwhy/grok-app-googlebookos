@@ -72,3 +72,32 @@ sealed class ChatStreamEvent {
     data class Done(val fullText: String? = null) : ChatStreamEvent()
     data class Error(val message: String) : ChatStreamEvent()
 }
+
+data class ProjectItem(
+    val name: String,
+    val path: String,
+    val isGit: Boolean = false,
+    val lastModified: Long = 0
+)
+
+data class FsDirectoryItem(
+    val name: String,
+    val path: String,
+    val isHidden: Boolean = false,
+    val isGit: Boolean = false
+)
+
+data class FsListResponse(
+    val currentPath: String,
+    val parentPath: String? = null,
+    val canCreate: Boolean = true,
+    val directories: List<FsDirectoryItem> = emptyList()
+)
+
+data class CreateProjectRequest(
+    val name: String,
+    val parentDir: String,
+    val template: String = "empty",
+    val initGit: Boolean = true,
+    val createReadme: Boolean = true
+)

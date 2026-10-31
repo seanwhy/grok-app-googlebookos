@@ -17,7 +17,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.grokapp.googlebookos.data.model.ProjectItem
+import com.grokapp.googlebookos.data.model.FsDirectoryItem
+import com.grokapp.googlebookos.data.model.FsListResponse
+import com.grokapp.googlebookos.util.StorageHelper
+import java.io.File
 import java.util.UUID
+
+enum class FolderPickerTarget {
+    SWITCH_PROJECT,
+    NEW_PROJECT_PARENT
+}
 
 data class WorkbenchUiState(
     val sessions: List<SessionSummary> = emptyList(),
@@ -33,7 +43,15 @@ data class WorkbenchUiState(
     val selectedPermission: String = "always-approve",
     val searchQuery: String = "",
     val showArchived: Boolean = false,
-    val activeCwd: String = "/storage/emulated/10/Codes",
+    val activeCwd: String = StorageHelper.getDefaultCodesDir(),
+    val activeProjectName: String = "Codes",
+    val recentProjects: List<ProjectItem> = emptyList(),
+    val currentFsList: FsListResponse? = null,
+    val isFsLoading: Boolean = false,
+    val showNewProjectDialog: Boolean = false,
+    val showFolderPickerDialog: Boolean = false,
+    val folderPickerTarget: FolderPickerTarget = FolderPickerTarget.SWITCH_PROJECT,
+    val pendingParentDir: String = StorageHelper.getDefaultCodesDir(),
     val errorMessage: String? = null
 )
 
@@ -58,16 +76,21 @@ class GrokWorkbenchViewModel(
                 val wasConnected = _uiState.value.serverConnected
                 apiClient.getStatus().fold(
                     onSuccess = { status ->
+                        val currentActive = _uiState.value.activeCwd
+                        val effectiveCwd = if (currentActive.isNotEmpty()) currentActive else status.cwd
+                        val projName = File(effectiveCwd).name.ifEmpty { "Codes" }
                         _uiState.update {
                             it.copy(
                                 serverStatus = status,
                                 serverConnected = true,
-                                activeCwd = status.cwd,
+                                activeCwd = effectiveCwd,
+                                activeProjectName = projName,
                                 errorMessage = null
                             )
                         }
                         if (!wasConnected) {
                             loadSessions()
+                            loadProjects()
                         }
                         delay(8_000)
                     },
@@ -88,6 +111,124 @@ class GrokWorkbenchViewModel(
     fun refreshAll() {
         startHeartbeatLoop()
         loadSessions()
+        loadProjects()
+    }
+
+    fun loadProjects() {
+        viewModelScope.launch {
+            apiClient.getProjects().fold(
+                onSuccess = { projects ->
+                    _uiState.update { it.copy(recentProjects = projects) }
+                },
+                onFailure = {
+                    val localList = StorageHelper.listLocalDirectories(StorageHelper.getDefaultCodesDir()).map {
+                        ProjectItem(name = it.name, path = it.path, isGit = it.isGit)
+                    }
+                    _uiState.update { it.copy(recentProjects = localList) }
+                }
+            )
+        }
+    }
+
+    fun loadFsList(path: String) {
+        _uiState.update { it.copy(isFsLoading = true) }
+        viewModelScope.launch {
+            apiClient.getFsList(path).fold(
+                onSuccess = { fsResp ->
+                    _uiState.update { it.copy(currentFsList = fsResp, isFsLoading = false) }
+                },
+                onFailure = {
+                    val localDirs = StorageHelper.listLocalDirectories(path)
+                    val parent = File(path).parent
+                    val fallback = FsListResponse(
+                        currentPath = path,
+                        parentPath = parent,
+                        canCreate = true,
+                        directories = localDirs
+                    )
+                    _uiState.update { it.copy(currentFsList = fallback, isFsLoading = false) }
+                }
+            )
+        }
+    }
+
+    fun openNewProjectDialog(initialParentDir: String? = null) {
+        val parent = initialParentDir ?: _uiState.value.activeCwd.let {
+            if (File(it).name == "Codes") it else (File(it).parent ?: StorageHelper.getDefaultCodesDir())
+        }
+        _uiState.update {
+            it.copy(
+                showNewProjectDialog = true,
+                pendingParentDir = parent
+            )
+        }
+    }
+
+    fun closeNewProjectDialog() {
+        _uiState.update { it.copy(showNewProjectDialog = false) }
+    }
+
+    fun openFolderPickerDialog(target: FolderPickerTarget, initialPath: String? = null) {
+        val path = initialPath ?: _uiState.value.activeCwd
+        _uiState.update {
+            it.copy(
+                showFolderPickerDialog = true,
+                folderPickerTarget = target
+            )
+        }
+        loadFsList(path)
+        loadProjects()
+    }
+
+    fun closeFolderPickerDialog() {
+        _uiState.update { it.copy(showFolderPickerDialog = false) }
+    }
+
+    fun setPendingParentDir(path: String) {
+        _uiState.update { it.copy(pendingParentDir = path) }
+    }
+
+    fun setActiveCwd(path: String) {
+        val normalized = if (path.endsWith("/") && path.length > 1) path.dropLast(1) else path
+        val projName = File(normalized).name.ifEmpty { "根目录" }
+        _uiState.update {
+            it.copy(
+                activeCwd = normalized,
+                activeProjectName = projName
+            )
+        }
+        startNewSession()
+        loadProjects()
+    }
+
+    fun createNewProject(
+        name: String,
+        parentDir: String,
+        template: String = "empty",
+        initGit: Boolean = true,
+        createReadme: Boolean = true
+    ) {
+        val targetPath = File(parentDir, name).absolutePath
+        viewModelScope.launch {
+            apiClient.createProject(name, parentDir, template, initGit, createReadme).fold(
+                onSuccess = { createdPath ->
+                    val finalPath = if (createdPath.isNotEmpty()) createdPath else targetPath
+                    setActiveCwd(finalPath)
+                    closeNewProjectDialog()
+                    loadProjects()
+                },
+                onFailure = {
+                    val localSuccess = StorageHelper.createLocalProject(targetPath, template, createReadme)
+                    if (localSuccess) {
+                        setActiveCwd(targetPath)
+                        closeNewProjectDialog()
+                        loadProjects()
+                    } else {
+                        _uiState.update { it.copy(errorMessage = "创建项目失败: ${it.errorMessage}") }
+                    }
+                }
+            )
+        }
     }
 
     fun loadSessions() {

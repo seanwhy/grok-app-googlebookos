@@ -4,6 +4,9 @@ import com.grokapp.googlebookos.data.model.ChatMessage
 import com.grokapp.googlebookos.data.model.ChatStreamEvent
 import com.grokapp.googlebookos.data.model.ModelOption
 import com.grokapp.googlebookos.data.model.PermissionOption
+import com.grokapp.googlebookos.data.model.ProjectItem
+import com.grokapp.googlebookos.data.model.FsDirectoryItem
+import com.grokapp.googlebookos.data.model.FsListResponse
 import com.grokapp.googlebookos.data.model.ReasoningOption
 import com.grokapp.googlebookos.data.model.ServerStatus
 import com.grokapp.googlebookos.data.model.SessionSummary
@@ -322,4 +325,97 @@ class GrokApiClient(private var baseUrl: String = "http://127.0.0.1:8088") {
             eventSource.cancel()
         }
     }.flowOn(Dispatchers.IO)
+
+    suspend fun getProjects(): Result<List<ProjectItem>> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/api/projects").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                val bodyStr = response.body?.string() ?: "{}"
+                val json = JSONObject(bodyStr)
+                val projects = mutableListOf<ProjectItem>()
+                val arr = json.optJSONArray("projects") ?: JSONArray()
+                for (i in 0 until arr.length()) {
+                    val p = arr.getJSONObject(i)
+                    projects.add(
+                        ProjectItem(
+                            name = p.optString("name"),
+                            path = p.optString("path"),
+                            isGit = p.optBoolean("is_git", false),
+                            lastModified = p.optLong("last_modified", 0)
+                        )
+                    )
+                }
+                Result.success(projects)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getFsList(path: String): Result<FsListResponse> = withContext(Dispatchers.IO) {
+        try {
+            val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
+            val req = Request.Builder().url("$baseUrl/api/fs/list?path=$encodedPath").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                val bodyStr = response.body?.string() ?: "{}"
+                val json = JSONObject(bodyStr)
+                val dirs = mutableListOf<FsDirectoryItem>()
+                val arr = json.optJSONArray("directories") ?: JSONArray()
+                for (i in 0 until arr.length()) {
+                    val d = arr.getJSONObject(i)
+                    dirs.add(
+                        FsDirectoryItem(
+                            name = d.optString("name"),
+                            path = d.optString("path"),
+                            isHidden = d.optBoolean("is_hidden", false),
+                            isGit = d.optBoolean("is_git", false)
+                        )
+                    )
+                }
+                val result = FsListResponse(
+                    currentPath = json.optString("current_path", path),
+                    parentPath = json.optString("parent_path").takeIf { it.isNotEmpty() && it != "null" },
+                    canCreate = json.optBoolean("can_create", true),
+                    directories = dirs
+                )
+                Result.success(result)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createProject(
+        name: String,
+        parentDir: String,
+        template: String = "empty",
+        initGit: Boolean = true,
+        createReadme: Boolean = true
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val jsonBody = JSONObject().apply {
+                put("name", name)
+                put("parent_dir", parentDir)
+                put("template", template)
+                put("init_git", initGit)
+                put("create_readme", createReadme)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/project/create")
+                .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                val bodyStr = response.body?.string() ?: "{}"
+                val json = JSONObject(bodyStr)
+                val targetPath = json.optString("path")
+                Result.success(targetPath)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }
+
