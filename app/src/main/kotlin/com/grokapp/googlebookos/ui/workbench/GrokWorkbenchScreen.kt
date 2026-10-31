@@ -592,32 +592,95 @@ fun MainChatArea(
             )
         }
     ) { innerPadding ->
-        if (uiState.messages.isEmpty()) {
-            WelcomeHero(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                onQuickPrompt = { prompt ->
-                    inputText = prompt
+        Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            if (!uiState.serverConnected) {
+                ServerOfflineBanner(context = LocalContext.current)
+            }
+            if (uiState.messages.isEmpty()) {
+                WelcomeHero(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    onQuickPrompt = { prompt ->
+                        inputText = prompt
+                    }
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    item { Spacer(modifier = Modifier.height(8.dp)) }
+                    items(uiState.messages, key = { it.id }) { message ->
+                        ChatMessageBubble(message = message)
+                    }
+                    item { Spacer(modifier = Modifier.height(16.dp)) }
                 }
-            )
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                item { Spacer(modifier = Modifier.height(8.dp)) }
-                items(uiState.messages, key = { it.id }) { message ->
-                    ChatMessageBubble(message = message)
-                }
-                item { Spacer(modifier = Modifier.height(16.dp)) }
             }
         }
     }
+}
+
+@Composable
+fun ServerOfflineBanner(context: Context) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.CloudOff, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        "后端 Agent 服务未连接 (127.0.0.1:8088)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        "如果虚拟机尚未启动，点击启动终端将自动激活后台服务",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(
+                onClick = { launchTerminalApp(context) },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("启动终端", fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+fun launchTerminalApp(context: Context) {
+    val candidates = listOf(
+        "com.android.virtualization.terminal",
+        "com.google.android.terminal",
+        "org.chromium.arc.terminal",
+        "com.termux"
+    )
+    for (pkg in candidates) {
+        val intent = context.packageManager.getLaunchIntentForPackage(pkg)
+        if (intent != null) {
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            return
+        }
+    }
+    Toast.makeText(context, "请在系统应用列表中启动 Terminal 终端", Toast.LENGTH_LONG).show()
 }
 
 @Composable

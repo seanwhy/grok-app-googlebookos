@@ -10,10 +10,12 @@ import com.grokapp.googlebookos.data.model.SessionSummary
 import com.grokapp.googlebookos.data.model.ToolCallInfo
 import com.grokapp.googlebookos.data.model.ToolStatus
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -43,39 +45,49 @@ class GrokWorkbenchViewModel(
     val uiState: StateFlow<WorkbenchUiState> = _uiState.asStateFlow()
 
     private var streamJob: Job? = null
+    private var heartbeatJob: Job? = null
 
     init {
-        refreshAll()
+        startHeartbeatLoop()
+    }
+
+    fun startHeartbeatLoop() {
+        heartbeatJob?.cancel()
+        heartbeatJob = viewModelScope.launch {
+            while (isActive) {
+                val wasConnected = _uiState.value.serverConnected
+                apiClient.getStatus().fold(
+                    onSuccess = { status ->
+                        _uiState.update {
+                            it.copy(
+                                serverStatus = status,
+                                serverConnected = true,
+                                activeCwd = status.cwd,
+                                errorMessage = null
+                            )
+                        }
+                        if (!wasConnected) {
+                            loadSessions()
+                        }
+                        delay(8_000)
+                    },
+                    onFailure = { err ->
+                        _uiState.update {
+                            it.copy(
+                                serverConnected = false,
+                                errorMessage = if (it.isGenerating) "连接中断: ${err.message}" else null
+                            )
+                        }
+                        delay(2_500)
+                    }
+                )
+            }
+        }
     }
 
     fun refreshAll() {
-        checkStatus()
+        startHeartbeatLoop()
         loadSessions()
-    }
-
-    fun checkStatus() {
-        viewModelScope.launch {
-            apiClient.getStatus().fold(
-                onSuccess = { status ->
-                    _uiState.update {
-                        it.copy(
-                            serverStatus = status,
-                            serverConnected = true,
-                            activeCwd = status.cwd,
-                            errorMessage = null
-                        )
-                    }
-                },
-                onFailure = { err ->
-                    _uiState.update {
-                        it.copy(
-                            serverConnected = false,
-                            errorMessage = "后端服务未连接 (127.0.0.1:8088): ${err.message}"
-                        )
-                    }
-                }
-            )
-        }
     }
 
     fun loadSessions() {
