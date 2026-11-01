@@ -66,6 +66,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 import java.io.File
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 @Composable
 fun GrokWorkbenchScreen(
@@ -1414,6 +1415,115 @@ fun LocalWebServerBanner(
 }
 
 @Composable
+fun MessageActionBar(
+    content: String,
+    thinking: String? = null,
+    isUser: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var isCopied by remember { mutableStateOf(false) }
+    var isCopiedFull by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isCopied) {
+        if (isCopied) {
+            delay(2000)
+            isCopied = false
+        }
+    }
+
+    LaunchedEffect(isCopiedFull) {
+        if (isCopiedFull) {
+            delay(2000)
+            isCopiedFull = false
+        }
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, start = 2.dp, end = 2.dp),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 1. Copy Content Button (复制正文)
+        Surface(
+            onClick = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("Message", content)
+                clipboard.setPrimaryClip(clip)
+                isCopied = true
+                Toast.makeText(context, if (isUser) "提问内容已复制" else "回答内容已复制", Toast.LENGTH_SHORT).show()
+            },
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.height(26.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (isCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                    contentDescription = "复制内容",
+                    modifier = Modifier.size(13.dp),
+                    tint = if (isCopied) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = if (isCopied) "已复制" else "复制内容",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    color = if (isCopied) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // 2. If message has thinking chain, provide "复制含思维链" button (复制含思考过程)
+        if (!isUser && !thinking.isNullOrBlank()) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Surface(
+                onClick = {
+                    val fullText = buildString {
+                        append("【思考过程】\n")
+                        append(thinking.trim())
+                        append("\n\n【正式回复】\n")
+                        append(content.trim())
+                    }
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = ClipData.newPlainText("FullMessage", fullText)
+                    clipboard.setPrimaryClip(clip)
+                    isCopiedFull = true
+                    Toast.makeText(context, "思考过程与正文已完整复制", Toast.LENGTH_SHORT).show()
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.height(26.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (isCopiedFull) Icons.Default.Check else Icons.Outlined.Psychology,
+                        contentDescription = "复制含思维链",
+                        modifier = Modifier.size(14.dp),
+                        tint = if (isCopiedFull) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (isCopiedFull) "已复制全部" else "复制含思考过程",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 11.sp,
+                        color = if (isCopiedFull) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ChatMessageBubble(
     message: ChatMessage,
     selectedToolId: String? = null,
@@ -1491,6 +1601,15 @@ fun ChatMessageBubble(
                             onPreviewInChrome = onPreviewInChrome
                         )
                     }
+                }
+
+                // Convenient Content Copy Bar (便捷内容复制栏)
+                if (message.content.isNotBlank()) {
+                    MessageActionBar(
+                        content = message.content,
+                        thinking = message.thinking,
+                        isUser = isUser
+                    )
                 }
             }
 
