@@ -16,6 +16,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -150,6 +151,8 @@ fun GrokWorkbenchScreen(
                     onOpenSettings = { showServerDialog = true },
                     onSwitchProject = { viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT) },
                     onOpenCodeReview = { viewModel.openCodeReview() },
+                    onToggleTimeline = { viewModel.toggleActivityTimeline() },
+                    onSelectTool = { viewModel.selectToolCall(it) },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -213,6 +216,8 @@ fun GrokWorkbenchScreen(
                     onOpenSettings = { showServerDialog = true },
                     onSwitchProject = { viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT) },
                     onOpenCodeReview = { viewModel.openCodeReview() },
+                    onToggleTimeline = { viewModel.toggleActivityTimeline() },
+                    onSelectTool = { viewModel.selectToolCall(it) },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -970,6 +975,8 @@ fun MainChatArea(
     onOpenSettings: () -> Unit,
     onSwitchProject: () -> Unit,
     onOpenCodeReview: () -> Unit = {},
+    onToggleTimeline: () -> Unit = {},
+    onSelectTool: (String?) -> Unit = {},
     onRenameCurrent: () -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
@@ -1055,6 +1062,32 @@ fun MainChatArea(
                         }
                     }
 
+                    // Activity Timeline Toggle Button (时间流工作台)
+                    IconButton(
+                        onClick = onToggleTimeline,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        BadgedBox(
+                            badge = {
+                                val totalTools = uiState.messages.sumOf { it.toolCalls.size }
+                                if (totalTools > 0) {
+                                    Badge(
+                                        containerColor = if (uiState.showActivityTimeline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ) {
+                                        Text("$totalTools", fontSize = 9.sp)
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (uiState.showActivityTimeline) Icons.Default.ViewSidebar else Icons.Outlined.ViewSidebar,
+                                contentDescription = "时间流工作台",
+                                tint = if (uiState.showActivityTimeline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     // Code Review Action Button
                     IconButton(
                         onClick = onOpenCodeReview,
@@ -1085,56 +1118,89 @@ fun MainChatArea(
                     containerColor = MaterialTheme.colorScheme.surface
                 )
             )
-        },
-        bottomBar = {
-            ComposerBar(
-                inputText = inputText,
-                onInputTextChange = { inputText = it },
-                isGenerating = uiState.isGenerating,
-                selectedModel = uiState.selectedModel,
-                selectedReasoning = uiState.selectedReasoning,
-                selectedPermission = uiState.selectedPermission,
-                onModelSelect = onModelSelect,
-                onReasoningSelect = onReasoningSelect,
-                onPermissionSelect = onPermissionSelect,
-                onSend = {
-                    if (inputText.isNotBlank()) {
-                        onSendMessage(inputText)
-                        inputText = ""
-                    }
-                },
-                onCancel = onCancelGeneration
-            )
         }
     ) { innerPadding ->
-        Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            if (!uiState.serverConnected) {
-                ServerOfflineBanner(context = LocalContext.current)
-            }
-            if (uiState.messages.isEmpty()) {
-                WelcomeHero(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    onQuickPrompt = { prompt ->
-                        inputText = prompt
-                    }
-                )
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    item { Spacer(modifier = Modifier.height(8.dp)) }
-                    items(uiState.messages, key = { it.id }) { message ->
-                        ChatMessageBubble(message = message)
-                    }
-                    item { Spacer(modifier = Modifier.height(16.dp)) }
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            // Main Conversation Flow Column
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            ) {
+                if (!uiState.serverConnected) {
+                    ServerOfflineBanner(context = LocalContext.current)
                 }
+
+                if (uiState.messages.isEmpty()) {
+                    WelcomeHero(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        onQuickPrompt = { prompt ->
+                            inputText = prompt
+                        }
+                    )
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        item { Spacer(modifier = Modifier.height(8.dp)) }
+                        items(uiState.messages, key = { it.id }) { message ->
+                            ChatMessageBubble(
+                                message = message,
+                                selectedToolId = uiState.selectedToolCallId,
+                                onSelectTool = { tool -> onSelectTool(tool.id) },
+                                onToggleRightPanel = onToggleTimeline,
+                                isRightPanelOpen = isWideScreen && uiState.showActivityTimeline
+                            )
+                        }
+                        item { Spacer(modifier = Modifier.height(16.dp)) }
+                    }
+                }
+
+                // Composer at bottom of conversation
+                ComposerBar(
+                    inputText = inputText,
+                    onInputTextChange = { inputText = it },
+                    isGenerating = uiState.isGenerating,
+                    selectedModel = uiState.selectedModel,
+                    selectedReasoning = uiState.selectedReasoning,
+                    selectedPermission = uiState.selectedPermission,
+                    onModelSelect = onModelSelect,
+                    onReasoningSelect = onReasoningSelect,
+                    onPermissionSelect = onPermissionSelect,
+                    onSend = {
+                        if (inputText.isNotBlank()) {
+                            onSendMessage(inputText)
+                            inputText = ""
+                        }
+                    },
+                    onCancel = onCancelGeneration
+                )
+            }
+
+            // Right Column: Docked / Frozen Activity Timeline Panel on Wide Screen
+            if (isWideScreen && uiState.showActivityTimeline) {
+                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                AgentActivityTimelinePanel(
+                    modifier = Modifier
+                        .width(360.dp)
+                        .fillMaxHeight(),
+                    messages = uiState.messages,
+                    isGenerating = uiState.isGenerating,
+                    selectedToolId = uiState.selectedToolCallId,
+                    onSelectTool = onSelectTool,
+                    onClose = onToggleTimeline
+                )
             }
         }
     }
@@ -1257,7 +1323,13 @@ fun WelcomeHero(
 }
 
 @Composable
-fun ChatMessageBubble(message: ChatMessage) {
+fun ChatMessageBubble(
+    message: ChatMessage,
+    selectedToolId: String? = null,
+    onSelectTool: (ToolCallInfo) -> Unit = {},
+    onToggleRightPanel: () -> Unit = {},
+    isRightPanelOpen: Boolean = false
+) {
     val isUser = message.role == "user"
 
     Row(
@@ -1284,7 +1356,7 @@ fun ChatMessageBubble(message: ChatMessage) {
 
         Column(
             modifier = Modifier
-                .widthIn(max = 680.dp)
+                .widthIn(max = 880.dp)
                 .fillMaxWidth(if (isUser) 0.85f else 1f),
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
@@ -1297,13 +1369,15 @@ fun ChatMessageBubble(message: ChatMessage) {
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Tool Execution Cards
+            // Tool Execution: Horizontal Timeline Stream (横向时间流工作形态)
             if (message.toolCalls.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    message.toolCalls.forEach { tool ->
-                        ToolCallCard(tool = tool)
-                    }
-                }
+                HorizontalToolTimeline(
+                    toolCalls = message.toolCalls,
+                    selectedToolId = selectedToolId,
+                    onSelectTool = onSelectTool,
+                    onToggleRightPanel = onToggleRightPanel,
+                    isRightPanelOpen = isRightPanelOpen
+                )
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
@@ -1485,35 +1559,674 @@ fun ThinkingAccordion(
     }
 }
 
+fun getToolIconAndTint(toolName: String): Pair<androidx.compose.ui.graphics.vector.ImageVector, Color> {
+    return when {
+        toolName.contains("终端") || toolName.contains("terminal") || toolName.contains("bash") || toolName.contains("cmd") ->
+            Icons.Default.Terminal to Color(0xFF38BDF8)
+        toolName.contains("读取") || toolName.contains("read") ->
+            Icons.Default.Description to Color(0xFF818CF8)
+        toolName.contains("修改") || toolName.contains("编辑") || toolName.contains("replace") ->
+            Icons.Default.Edit to Color(0xFFF59E0B)
+        toolName.contains("新建") || toolName.contains("write") ->
+            Icons.Default.NoteAdd to Color(0xFF10B981)
+        toolName.contains("目录") || toolName.contains("dir") || toolName.contains("list") ->
+            Icons.Default.Folder to Color(0xFFFBBF24)
+        toolName.contains("搜索") || toolName.contains("grep") || toolName.contains("search") ->
+            Icons.Default.Search to Color(0xFFA78BFA)
+        toolName.contains("联网") || toolName.contains("web") ->
+            Icons.Default.Language to Color(0xFF34D399)
+        toolName.contains("智能体") || toolName.contains("agent") ->
+            Icons.Default.SmartToy to Color(0xFFEC4899)
+        toolName.contains("计划") || toolName.contains("plan") ->
+            Icons.Default.Assignment to Color(0xFF60A5FA)
+        else ->
+            Icons.Default.Build to Color(0xFF94A3B8)
+    }
+}
+
+@Composable
+fun HorizontalToolTimeline(
+    toolCalls: List<ToolCallInfo>,
+    selectedToolId: String?,
+    onSelectTool: (ToolCallInfo) -> Unit,
+    onToggleRightPanel: () -> Unit,
+    isRightPanelOpen: Boolean
+) {
+    var isExpandedInline by remember { mutableStateOf(false) }
+    val isAnyRunning = toolCalls.any { it.status == ToolStatus.RUNNING }
+    val isAnyFailed = toolCalls.any { it.status == ToolStatus.FAILED }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+            // Header Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Timeline,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "操作时间流",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text = "${toolCalls.size} 步",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    // Status Badge
+                    if (isAnyRunning) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(10.dp),
+                                strokeWidth = 1.5.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("执行中", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                        }
+                    } else if (isAnyFailed) {
+                        Text("有异常", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Medium)
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(12.dp), tint = Color(0xFF10B981))
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text("全部完成", fontSize = 10.5.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+
+                // Action Buttons: Toggle Right Panel / Inline Expand
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = onToggleRightPanel,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isRightPanelOpen) Icons.Default.ViewSidebar else Icons.Outlined.ViewSidebar,
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(if (isRightPanelOpen) "侧栏工作台" else "查看工作台", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+
+                    IconButton(
+                        onClick = { isExpandedInline = !isExpandedInline },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isExpandedInline) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = "展开折叠",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Horizontal Timeline Stream Row
+            val scrollState = rememberScrollState()
+            LaunchedEffect(toolCalls.size) {
+                scrollState.animateScrollTo(scrollState.maxValue)
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(scrollState)
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                toolCalls.forEachIndexed { index, tool ->
+                    val isSelected = tool.id == selectedToolId
+                    HorizontalToolPill(
+                        stepIndex = index + 1,
+                        tool = tool,
+                        isSelected = isSelected,
+                        onClick = { onSelectTool(tool) }
+                    )
+                    if (index < toolCalls.size - 1) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                            tint = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    }
+                }
+            }
+
+            // Inline Expansion (Optional)
+            AnimatedVisibility(
+                visible = isExpandedInline,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    toolCalls.forEach { tool ->
+                        ToolCallCard(tool = tool)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HorizontalToolPill(
+    stepIndex: Int,
+    tool: ToolCallInfo,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    val (icon, tint) = remember(tool.name) { getToolIconAndTint(tool.name) }
+    val shortLabel = remember(tool.name) {
+        when {
+            tool.name.contains("读取文件:") -> "读取 " + tool.name.substringAfter("读取文件:").trim().substringAfterLast("/")
+            tool.name.contains("终端执行:") -> "终端 " + tool.name.substringAfter("终端执行:").trim().take(18)
+            tool.name.contains("搜索代码:") -> "搜索 " + tool.name.substringAfter("搜索代码:").trim().take(16)
+            tool.name.contains("调度子智能体") -> "调度子智能体"
+            tool.name.contains("修改文件:") -> "编辑 " + tool.name.substringAfter("修改文件:").trim().substringAfterLast("/")
+            tool.name.contains("新建文件:") -> "新建 " + tool.name.substringAfter("新建文件:").trim().substringAfterLast("/")
+            else -> tool.name.take(18)
+        }
+    }
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = if (isSelected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(
+            1.dp,
+            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "$stepIndex",
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(13.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = shortLabel,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            when (tool.status) {
+                ToolStatus.RUNNING -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(9.dp),
+                        strokeWidth = 1.2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                ToolStatus.SUCCESS -> {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = Color(0xFF10B981),
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
+                ToolStatus.FAILED -> {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AgentActivityTimelinePanel(
+    modifier: Modifier = Modifier,
+    messages: List<ChatMessage>,
+    isGenerating: Boolean,
+    selectedToolId: String?,
+    onSelectTool: (String?) -> Unit,
+    onClose: () -> Unit
+) {
+    var selectedScopeTab by remember { mutableIntStateOf(0) }
+
+    val allTools = remember(messages) {
+        messages.flatMap { it.toolCalls }
+    }
+    val latestTools = remember(messages) {
+        messages.lastOrNull { it.role == "assistant" && it.toolCalls.isNotEmpty() }?.toolCalls ?: emptyList()
+    }
+
+    val displayTools = if (selectedScopeTab == 0 && latestTools.isNotEmpty()) latestTools else allTools
+
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = 1.dp
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Timeline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "时间流工作台",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text = "${displayTools.size} 步",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isGenerating) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭工作台", modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            // Sub-tabs: 本轮操作 vs 全部操作
+            if (allTools.size > latestTools.size && latestTools.isNotEmpty()) {
+                TabRow(
+                    selectedTabIndex = selectedScopeTab,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Tab(
+                        selected = selectedScopeTab == 0,
+                        onClick = { selectedScopeTab = 0 },
+                        text = { Text("本轮 (${latestTools.size})", fontSize = 12.sp) }
+                    )
+                    Tab(
+                        selected = selectedScopeTab == 1,
+                        onClick = { selectedScopeTab = 1 },
+                        text = { Text("全部 (${allTools.size})", fontSize = 12.sp) }
+                    )
+                }
+            }
+
+            // Timeline List Content
+            if (displayTools.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = null,
+                            modifier = Modifier.size(40.dp),
+                            tint = MaterialTheme.colorScheme.outline
+                        )
+                        Text(
+                            text = "暂无操作时间流",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "当智能体执行读取文件、终端命令、代码搜索时，操作过程将在此处实时冻结展示。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
+                }
+            } else {
+                val listState = rememberLazyListState()
+                LaunchedEffect(displayTools.size) {
+                    listState.animateScrollToItem(displayTools.size - 1)
+                }
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    itemsIndexed(displayTools, key = { index, tool -> tool.id }) { index, tool ->
+                        val isSelected = tool.id == selectedToolId
+                        TimelineStepCard(
+                            stepIndex = index + 1,
+                            tool = tool,
+                            isLast = index == displayTools.size - 1,
+                            isSelected = isSelected,
+                            onToggleSelect = { onSelectTool(tool.id) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TimelineStepCard(
+    stepIndex: Int,
+    tool: ToolCallInfo,
+    isLast: Boolean,
+    isSelected: Boolean,
+    onToggleSelect: () -> Unit
+) {
+    val context = LocalContext.current
+    var isExpanded by remember { mutableStateOf(isSelected) }
+
+    LaunchedEffect(isSelected) {
+        if (isSelected) isExpanded = true
+    }
+
+    val (toolIcon, iconTint) = remember(tool.name) { getToolIconAndTint(tool.name) }
+
+    val statusColor = when (tool.status) {
+        ToolStatus.RUNNING -> MaterialTheme.colorScheme.primary
+        ToolStatus.SUCCESS -> Color(0xFF10B981)
+        ToolStatus.FAILED -> MaterialTheme.colorScheme.error
+    }
+
+    Row(modifier = Modifier.fillMaxWidth()) {
+        // Left Column: Step node + Timeline connector
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.width(28.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(statusColor.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (tool.status == ToolStatus.RUNNING) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                        color = statusColor
+                    )
+                } else {
+                    Text(
+                        text = "$stepIndex",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = statusColor
+                    )
+                }
+            }
+
+            if (!isLast) {
+                Box(
+                    modifier = Modifier
+                        .width(2.dp)
+                        .height(if (isExpanded) 120.dp else 40.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        // Right Column: Card
+        Surface(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable {
+                    isExpanded = !isExpanded
+                    onToggleSelect()
+                },
+            shape = RoundedCornerShape(10.dp),
+            color = if (isSelected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(
+                1.dp,
+                if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+            )
+        ) {
+            Column(modifier = Modifier.padding(10.dp)) {
+                // Title Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = toolIcon,
+                            contentDescription = null,
+                            tint = iconTint,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = tool.name,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = if (isExpanded) 3 else 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        when (tool.status) {
+                            ToolStatus.RUNNING -> {
+                                Text("执行中", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                            }
+                            ToolStatus.SUCCESS -> {
+                                Text("已完成", fontSize = 10.5.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Medium)
+                            }
+                            ToolStatus.FAILED -> {
+                                Text("失败", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Expanded Args and Results
+                AnimatedVisibility(
+                    visible = isExpanded,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        if (tool.args.isNotBlank()) {
+                            Column {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("参数", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.5.sp)
+                                    IconButton(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            val clip = ClipData.newPlainText("ToolArgs", tool.args)
+                                            clipboard.setPrimaryClip(clip)
+                                            Toast.makeText(context, "参数已复制", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(20.dp)
+                                    ) {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = "复制参数", modifier = Modifier.size(11.dp))
+                                    }
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF0D1117),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    SelectionContainer {
+                                        Text(
+                                            text = tool.args,
+                                            modifier = Modifier.padding(6.dp),
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.5.sp,
+                                            lineHeight = 15.sp,
+                                            color = Color(0xFFC9D1D9)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!tool.result.isNullOrBlank()) {
+                            Column {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("结果日志", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.5.sp)
+                                    IconButton(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            val clip = ClipData.newPlainText("ToolResult", tool.result)
+                                            clipboard.setPrimaryClip(clip)
+                                            Toast.makeText(context, "结果已复制", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(20.dp)
+                                    ) {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = "复制结果", modifier = Modifier.size(11.dp))
+                                    }
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF0D1117),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    SelectionContainer {
+                                        Text(
+                                            text = tool.result,
+                                            modifier = Modifier.padding(6.dp),
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.5.sp,
+                                            lineHeight = 15.sp,
+                                            color = Color(0xFF7EE787)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun ToolCallCard(tool: ToolCallInfo) {
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
-
-    val (toolIcon, iconTint) = remember(tool.name) {
-        when {
-            tool.name.contains("终端") || tool.name.contains("terminal") ->
-                Icons.Default.Terminal to Color(0xFF38BDF8)
-            tool.name.contains("读取") || tool.name.contains("read") ->
-                Icons.Default.Description to Color(0xFF818CF8)
-            tool.name.contains("修改") || tool.name.contains("编辑") || tool.name.contains("replace") ->
-                Icons.Default.Edit to Color(0xFFF59E0B)
-            tool.name.contains("新建") || tool.name.contains("write") ->
-                Icons.Default.NoteAdd to Color(0xFF10B981)
-            tool.name.contains("目录") || tool.name.contains("dir") ->
-                Icons.Default.Folder to Color(0xFFFBBF24)
-            tool.name.contains("搜索") || tool.name.contains("grep") ->
-                Icons.Default.Search to Color(0xFFA78BFA)
-            tool.name.contains("联网") || tool.name.contains("web") ->
-                Icons.Default.Language to Color(0xFF34D399)
-            tool.name.contains("智能体") || tool.name.contains("agent") ->
-                Icons.Default.SmartToy to Color(0xFFEC4899)
-            tool.name.contains("计划") || tool.name.contains("plan") ->
-                Icons.Default.Assignment to Color(0xFF60A5FA)
-            else ->
-                Icons.Default.Build to Color(0xFF94A3B8)
-        }
-    }
+    val (toolIcon, iconTint) = remember(tool.name) { getToolIconAndTint(tool.name) }
 
     Surface(
         shape = RoundedCornerShape(10.dp),

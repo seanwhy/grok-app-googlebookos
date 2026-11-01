@@ -57,6 +57,8 @@ data class WorkbenchUiState(
     val subscriptionQuota: SubscriptionQuota = SubscriptionQuota(),
     val codeReviewState: CodeReviewState = CodeReviewState(),
     val showCodeReviewDialog: Boolean = false,
+    val showActivityTimeline: Boolean = true,
+    val selectedToolCallId: String? = null,
     val errorMessage: String? = null
 )
 
@@ -517,6 +519,19 @@ class GrokWorkbenchViewModel(
 
     fun closeCodeReview() {
         _uiState.update { it.copy(showCodeReviewDialog = false) }
+    }
+
+    fun toggleActivityTimeline() {
+        _uiState.update { it.copy(showActivityTimeline = !it.showActivityTimeline) }
+    }
+
+    fun selectToolCall(toolId: String?) {
+        _uiState.update {
+            it.copy(
+                selectedToolCallId = if (it.selectedToolCallId == toolId) null else toolId,
+                showActivityTimeline = true
+            )
+        }
     }
 
     fun loadGitDiff(scope: String = "auto") {
