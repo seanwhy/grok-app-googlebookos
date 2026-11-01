@@ -19,6 +19,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.grokapp.googlebookos.data.model.ProjectItem
 import com.grokapp.googlebookos.data.model.SubscriptionQuota
+import com.grokapp.googlebookos.data.model.CodeReviewState
 import com.grokapp.googlebookos.data.model.FsDirectoryItem
 import com.grokapp.googlebookos.data.model.FsListResponse
 import com.grokapp.googlebookos.util.StorageHelper
@@ -54,6 +55,8 @@ data class WorkbenchUiState(
     val folderPickerTarget: FolderPickerTarget = FolderPickerTarget.SWITCH_PROJECT,
     val pendingParentDir: String = StorageHelper.getDefaultCodesDir(),
     val subscriptionQuota: SubscriptionQuota = SubscriptionQuota(),
+    val codeReviewState: CodeReviewState = CodeReviewState(),
+    val showCodeReviewDialog: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -500,5 +503,132 @@ class GrokWorkbenchViewModel(
 
     fun clearErrorMessage() {
         _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    fun openCodeReview(scope: String = "auto") {
+        _uiState.update {
+            it.copy(
+                showCodeReviewDialog = true,
+                codeReviewState = it.codeReviewState.copy(isLoading = true, error = null)
+            )
+        }
+        loadGitDiff(scope)
+    }
+
+    fun closeCodeReview() {
+        _uiState.update { it.copy(showCodeReviewDialog = false) }
+    }
+
+    fun loadGitDiff(scope: String = "auto") {
+        val cwd = _uiState.value.activeCwd
+        viewModelScope.launch {
+            apiClient.getGitDiff(cwd, scope).fold(
+                onSuccess = { diffResp ->
+                    val firstFile = diffResp.files.firstOrNull()?.path
+                    _uiState.update { state ->
+                        state.copy(
+                            codeReviewState = state.codeReviewState.copy(
+                                isGit = diffResp.isGit,
+                                cwd = diffResp.cwd,
+                                branch = diffResp.branch,
+                                commitId = diffResp.commitId,
+                                commitMsg = diffResp.commitMsg,
+                                hasUncommitted = diffResp.hasUncommitted,
+                                scope = diffResp.scope,
+                                statSummary = diffResp.statSummary,
+                                files = diffResp.files,
+                                selectedFilePath = firstFile,
+                                isLoading = false,
+                                error = null
+                            )
+                        )
+                    }
+                    if (firstFile != null) {
+                        loadGitFileContent(firstFile)
+                    }
+                },
+                onFailure = { err ->
+                    _uiState.update { state ->
+                        state.copy(
+                            codeReviewState = state.codeReviewState.copy(
+                                isLoading = false,
+                                error = err.message
+                            )
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun selectDiffFile(path: String) {
+        _uiState.update { state ->
+            state.copy(
+                codeReviewState = state.codeReviewState.copy(selectedFilePath = path)
+            )
+        }
+        loadGitFileContent(path)
+    }
+
+    fun loadGitFileContent(path: String) {
+        val cwd = _uiState.value.activeCwd
+        viewModelScope.launch {
+            apiClient.getGitFile(cwd, path).fold(
+                onSuccess = { content ->
+                    _uiState.update { state ->
+                        state.copy(
+                            codeReviewState = state.codeReviewState.copy(selectedFileContent = content)
+                        )
+                    }
+                },
+                onFailure = {
+                    _uiState.update { state ->
+                        state.copy(
+                            codeReviewState = state.codeReviewState.copy(selectedFileContent = null)
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun revertDiffFile(path: String) {
+        val cwd = _uiState.value.activeCwd
+        viewModelScope.launch {
+            apiClient.revertGitChange(cwd, path).fold(
+                onSuccess = {
+                    loadGitDiff(_uiState.value.codeReviewState.scope)
+                },
+                onFailure = { err ->
+                    _uiState.update { state ->
+                        state.copy(
+                            codeReviewState = state.codeReviewState.copy(error = "撤销失败: ${err.message}")
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun startAiCodeReview() {
+        val reviewScope = _uiState.value.codeReviewState.scope
+        val scopeDesc = if (reviewScope == "working") "当前工作区未提交改动" else "最新提交内容"
+        val prompt = """/review 请针对项目（${_uiState.value.activeProjectName}）的${scopeDesc}进行专业技术代码审查：
+重点检查：
+1. 【架构设计与模块分层】：是否存在反模式、过度设计或破坏现有分层？
+2. 【逻辑漏洞与边界条件】：是否存在空指针、越界、并发安全或状态不同步隐患？
+3. 【代码异味与复杂度】：是否存在冗余分支、死代码、或可借由 Code Judo 极简化的结构？
+4. 【优化与整改方案】：请给出具体的代码片段修改建议与重构方案。"""
+        
+        _uiState.update { state ->
+            state.copy(
+                codeReviewState = state.codeReviewState.copy(
+                    isReviewing = true,
+                    reviewReport = "正在启动 Grok 智能代码审查，正在深度分析变更并对比语法树与逻辑流..."
+                )
+            )
+        }
+        
+        sendMessage(prompt)
     }
 }

@@ -12,6 +12,8 @@ import com.grokapp.googlebookos.data.model.ServerStatus
 import com.grokapp.googlebookos.data.model.SessionSummary
 import com.grokapp.googlebookos.data.model.SubscriptionQuota
 import com.grokapp.googlebookos.data.model.ProductUsageItem
+import com.grokapp.googlebookos.data.model.GitDiffFile
+import com.grokapp.googlebookos.data.model.GitDiffResponse
 import com.grokapp.googlebookos.data.model.ToolCallInfo
 import com.grokapp.googlebookos.data.model.ToolStatus
 import kotlinx.coroutines.Dispatchers
@@ -481,6 +483,97 @@ class GrokApiClient(private var baseUrl: String = "http://127.0.0.1:8088") {
                 val json = JSONObject(bodyStr)
                 val targetPath = json.optString("path")
                 Result.success(targetPath)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getGitDiff(cwd: String, scope: String = "auto"): Result<GitDiffResponse> = withContext(Dispatchers.IO) {
+        try {
+            val encodedCwd = java.net.URLEncoder.encode(cwd, "UTF-8")
+            val req = Request.Builder()
+                .url("$baseUrl/api/git/diff?cwd=$encodedCwd&scope=$scope")
+                .get()
+                .build()
+
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                val bodyStr = response.body?.string() ?: "{}"
+                val json = JSONObject(bodyStr)
+
+                val fileList = mutableListOf<GitDiffFile>()
+                val filesArr = json.optJSONArray("files")
+                if (filesArr != null) {
+                    for (i in 0 until filesArr.length()) {
+                        val fo = filesArr.getJSONObject(i)
+                        fileList.add(
+                            GitDiffFile(
+                                path = fo.optString("path"),
+                                name = fo.optString("name"),
+                                status = fo.optString("status", "M"),
+                                statusLabel = fo.optString("status_label", "修改"),
+                                additions = fo.optInt("additions", 0),
+                                deletions = fo.optInt("deletions", 0),
+                                diff = fo.optString("diff", "")
+                            )
+                        )
+                    }
+                }
+
+                val diffResp = GitDiffResponse(
+                    status = json.optString("status", "ok"),
+                    isGit = json.optBoolean("is_git", false),
+                    cwd = json.optString("cwd", cwd),
+                    branch = json.optString("branch", ""),
+                    commitId = json.optString("commit_id", ""),
+                    commitMsg = json.optString("commit_msg", ""),
+                    hasUncommitted = json.optBoolean("has_uncommitted", false),
+                    scope = json.optString("scope", scope),
+                    statSummary = json.optString("stat_summary", ""),
+                    files = fileList
+                )
+                Result.success(diffResp)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getGitFile(cwd: String, path: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val encodedCwd = java.net.URLEncoder.encode(cwd, "UTF-8")
+            val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
+            val req = Request.Builder()
+                .url("$baseUrl/api/git/file?cwd=$encodedCwd&path=$encodedPath")
+                .get()
+                .build()
+
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                val bodyStr = response.body?.string() ?: "{}"
+                val json = JSONObject(bodyStr)
+                Result.success(json.optString("content", ""))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun revertGitChange(cwd: String, path: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val jsonBody = JSONObject().apply {
+                put("cwd", cwd)
+                put("path", path)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/git/revert")
+                .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                Result.success(true)
             }
         } catch (e: Exception) {
             Result.failure(e)

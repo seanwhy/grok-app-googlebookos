@@ -51,6 +51,10 @@ import com.grokapp.googlebookos.data.model.ProjectItem
 import com.grokapp.googlebookos.data.model.FsDirectoryItem
 import com.grokapp.googlebookos.data.model.SubscriptionQuota
 import com.grokapp.googlebookos.data.model.ProductUsageItem
+import com.grokapp.googlebookos.data.model.CodeReviewState
+import com.grokapp.googlebookos.data.model.GitDiffFile
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.grokapp.googlebookos.util.StorageHelper
 import java.io.File
 import kotlinx.coroutines.launch
@@ -123,7 +127,8 @@ fun GrokWorkbenchScreen(
                         onSearchChange = { viewModel.setSearchQuery(it) },
                         onShowArchivedToggle = { viewModel.setShowArchived(it) },
                         onOpenSettings = { showServerDialog = true },
-                        onRefreshQuota = { viewModel.loadSubscriptionQuota() }
+                        onRefreshQuota = { viewModel.loadSubscriptionQuota() },
+                        onOpenCodeReview = { viewModel.openCodeReview() }
                     )
                 }
 
@@ -144,6 +149,7 @@ fun GrokWorkbenchScreen(
                     onPermissionSelect = { viewModel.setPermission(it) },
                     onOpenSettings = { showServerDialog = true },
                     onSwitchProject = { viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT) },
+                    onOpenCodeReview = { viewModel.openCodeReview() },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -185,7 +191,11 @@ fun GrokWorkbenchScreen(
                             onSearchChange = { viewModel.setSearchQuery(it) },
                             onShowArchivedToggle = { viewModel.setShowArchived(it) },
                             onOpenSettings = { showServerDialog = true },
-                            onRefreshQuota = { viewModel.loadSubscriptionQuota() }
+                            onRefreshQuota = { viewModel.loadSubscriptionQuota() },
+                            onOpenCodeReview = {
+                                viewModel.openCodeReview()
+                                scope.launch { drawerState.close() }
+                            }
                         )
                     }
                 }
@@ -202,6 +212,7 @@ fun GrokWorkbenchScreen(
                     onPermissionSelect = { viewModel.setPermission(it) },
                     onOpenSettings = { showServerDialog = true },
                     onSwitchProject = { viewModel.openFolderPickerDialog(FolderPickerTarget.SWITCH_PROJECT) },
+                    onOpenCodeReview = { viewModel.openCodeReview() },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -330,6 +341,19 @@ fun GrokWorkbenchScreen(
             }
         )
     }
+
+    if (uiState.showCodeReviewDialog) {
+        CodeReviewDialog(
+            state = uiState.codeReviewState,
+            projectName = uiState.activeProjectName,
+            onDismiss = { viewModel.closeCodeReview() },
+            onRefresh = { scope -> viewModel.loadGitDiff(scope) },
+            onScopeChange = { scope -> viewModel.loadGitDiff(scope) },
+            onSelectFile = { path -> viewModel.selectDiffFile(path) },
+            onRevertFile = { path -> viewModel.revertDiffFile(path) },
+            onStartAiReview = { viewModel.startAiCodeReview() }
+        )
+    }
 }
 
 
@@ -346,7 +370,8 @@ fun SidebarContent(
     onSearchChange: (String) -> Unit,
     onShowArchivedToggle: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
-    onRefreshQuota: () -> Unit = {}
+    onRefreshQuota: () -> Unit = {},
+    onOpenCodeReview: () -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
         // App Header
@@ -483,6 +508,18 @@ fun SidebarContent(
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("打开目录", fontSize = 12.sp)
                     }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                FilledTonalButton(
+                    onClick = onOpenCodeReview,
+                    modifier = Modifier.fillMaxWidth().height(32.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.Difference, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("代码审查 (Git Review)", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
@@ -932,6 +969,7 @@ fun MainChatArea(
     onPermissionSelect: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onSwitchProject: () -> Unit,
+    onOpenCodeReview: () -> Unit = {},
     onRenameCurrent: () -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
@@ -1002,7 +1040,7 @@ fun MainChatArea(
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.padding(end = 8.dp)
+                        modifier = Modifier.padding(end = 4.dp)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -1016,6 +1054,29 @@ fun MainChatArea(
                             )
                         }
                     }
+
+                    // Code Review Action Button
+                    IconButton(
+                        onClick = onOpenCodeReview,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        BadgedBox(
+                            badge = {
+                                val count = uiState.codeReviewState.files.size
+                                if (count > 0) {
+                                    Badge(
+                                        containerColor = MaterialTheme.colorScheme.tertiary,
+                                        contentColor = MaterialTheme.colorScheme.onTertiary
+                                    ) {
+                                        Text("$count", fontSize = 9.sp)
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Difference, contentDescription = "代码审查 (Git Review)")
+                        }
+                    }
+
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Outlined.Dns, contentDescription = "Server Status")
                     }
@@ -2408,6 +2469,889 @@ fun FolderPickerDialog(
                 }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CodeReviewDialog(
+    state: CodeReviewState,
+    projectName: String,
+    onDismiss: () -> Unit,
+    onRefresh: (String) -> Unit,
+    onScopeChange: (String) -> Unit,
+    onSelectFile: (String) -> Unit,
+    onRevertFile: (String) -> Unit,
+    onStartAiReview: () -> Unit
+) {
+    val context = LocalContext.current
+    var selectedTab by remember { mutableIntStateOf(0) }
+    var fileToRevert by remember { mutableStateOf<GitDiffFile?>(null) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.94f)
+                .clip(RoundedCornerShape(16.dp)),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header Bar
+                CodeReviewHeader(
+                    projectName = projectName,
+                    state = state,
+                    onScopeChange = onScopeChange,
+                    onRefresh = { onRefresh(state.scope) },
+                    onStartAiReview = onStartAiReview,
+                    onDismiss = onDismiss
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Main Content
+                if (state.isLoading) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("正在读取 Git 变更与分支状态...", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                } else if (!state.error.isNullOrBlank()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
+                            Text("读取 Git 差异失败", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(state.error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Button(onClick = { onRefresh(state.scope) }) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("重试")
+                            }
+                        }
+                    }
+                } else if (!state.isGit) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(48.dp))
+                            Text("当前目录未初始化 Git 仓库", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                "工作区 ${state.cwd} 尚不是一个 Git 项目。请切换到包含 Git 仓库的项目，或在终端中运行 git init 初始化。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.widthIn(max = 480.dp)
+                            )
+                        }
+                    }
+                } else if (state.files.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(48.dp))
+                            Text(
+                                text = if (state.scope == "working") "当前工作区干净 (无未提交改动)" else "最新提交没有可对比的代码差异",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (state.scope == "working") "可以切换到「最新提交」查看上一次代码提交的差异，或直接进行 AI 代码分析。" else "当前仓库暂无提交历史差异。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (state.scope == "working") {
+                                    OutlinedButton(onClick = { onScopeChange("latest") }) {
+                                        Text("切换到最新提交查看")
+                                    }
+                                } else {
+                                    OutlinedButton(onClick = { onScopeChange("working") }) {
+                                        Text("查看工作区改动")
+                                    }
+                                }
+                                Button(onClick = onStartAiReview) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("针对项目发起 Grok 深度审查")
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Split View: Files list (left) & Detail viewer (right)
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        // Left Column: File List
+                        Column(
+                            modifier = Modifier
+                                .width(310.dp)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                        ) {
+                            // File list header
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "变更文件 (${state.files.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                val totalAdds = state.files.sumOf { it.additions }
+                                val totalDels = state.files.sumOf { it.deletions }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (totalAdds > 0) {
+                                        Text("+$totalAdds", style = MaterialTheme.typography.labelSmall, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    if (totalDels > 0) {
+                                        Text("-$totalDels", style = MaterialTheme.typography.labelSmall, color = Color(0xFFEF4444), fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                            // File list
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                            ) {
+                                items(state.files, key = { it.path }) { file ->
+                                    val isSelected = file.path == state.selectedFilePath
+                                    DiffFileItemRow(
+                                        file = file,
+                                        isSelected = isSelected,
+                                        canRevert = state.scope == "working",
+                                        onClick = { onSelectFile(file.path) },
+                                        onRevert = { fileToRevert = file }
+                                    )
+                                }
+                            }
+                        }
+
+                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                        // Right Column: Diff / Source / AI Review
+                        val currentFile = state.files.find { it.path == state.selectedFilePath } ?: state.files.firstOrNull()
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                        ) {
+                            // Sub-tabs
+                            TabRow(
+                                selectedTabIndex = selectedTab,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Tab(
+                                    selected = selectedTab == 0,
+                                    onClick = { selectedTab = 0 },
+                                    text = { Text("代码差异 (Diff)") }
+                                )
+                                Tab(
+                                    selected = selectedTab == 1,
+                                    onClick = { selectedTab = 1 },
+                                    text = { Text("完整源码 (Source)") }
+                                )
+                                Tab(
+                                    selected = selectedTab == 2,
+                                    onClick = { selectedTab = 2 },
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.primary)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("AI 审查报告")
+                                        }
+                                    }
+                                )
+                            }
+
+                            when (selectedTab) {
+                                0 -> {
+                                    // Diff Tab
+                                    DiffViewerTab(
+                                        file = currentFile,
+                                        onCopyDiff = {
+                                            currentFile?.diff?.let { diffText ->
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                val clip = ClipData.newPlainText("Diff", diffText)
+                                                clipboard.setPrimaryClip(clip)
+                                                Toast.makeText(context, "Diff 已复制", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    )
+                                }
+                                1 -> {
+                                    // Source Tab
+                                    SourceViewerTab(
+                                        filePath = currentFile?.path ?: "",
+                                        content = state.selectedFileContent,
+                                        onCopyContent = {
+                                            state.selectedFileContent?.let { fileText ->
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                val clip = ClipData.newPlainText("Source", fileText)
+                                                clipboard.setPrimaryClip(clip)
+                                                Toast.makeText(context, "文件源码已复制", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    )
+                                }
+                                2 -> {
+                                    // AI Review Tab
+                                    AiReviewTab(
+                                        state = state,
+                                        projectName = projectName,
+                                        onStartAiReview = onStartAiReview,
+                                        onDismiss = onDismiss
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Confirm Revert Dialog
+    if (fileToRevert != null) {
+        AlertDialog(
+            onDismissRequest = { fileToRevert = null },
+            title = { Text("确认撤销修改？") },
+            text = {
+                Text("即将撤销文件「${fileToRevert?.name}」在工作区中的所有未提交更改。\n此操作不可逆，确定继续吗？")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        fileToRevert?.let { onRevertFile(it.path) }
+                        fileToRevert = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("确认撤销")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { fileToRevert = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun CodeReviewHeader(
+    projectName: String,
+    state: CodeReviewState,
+    onScopeChange: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onStartAiReview: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Left: Title & Repo details
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(
+                Icons.Default.Difference,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "代码审查与差异分析",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = projectName,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                    if (state.branch.isNotBlank()) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = state.branch,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                    if (state.commitId.isNotBlank()) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = state.commitId.take(7),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                if (state.commitMsg.isNotBlank()) {
+                    Text(
+                        text = "最新提交: ${state.commitMsg}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        // Center / Scope Filter Buttons
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            FilterChip(
+                selected = state.scope == "working",
+                onClick = { onScopeChange("working") },
+                label = { Text("工作区改动", fontSize = 12.sp) },
+                leadingIcon = {
+                    if (state.hasUncommitted) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF10B981))
+                        )
+                    }
+                }
+            )
+            FilterChip(
+                selected = state.scope == "latest",
+                onClick = { onScopeChange("latest") },
+                label = { Text("最新提交", fontSize = 12.sp) }
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // Right Action Buttons
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = onStartAiReview,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Grok 深度审查", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+            IconButton(onClick = onRefresh) {
+                Icon(Icons.Default.Refresh, contentDescription = "刷新")
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = "关闭")
+            }
+        }
+    }
+}
+
+@Composable
+fun DiffFileItemRow(
+    file: GitDiffFile,
+    isSelected: Boolean,
+    canRevert: Boolean,
+    onClick: () -> Unit,
+    onRevert: () -> Unit
+) {
+    val statusColor = when (file.status) {
+        "A" -> Color(0xFF10B981)
+        "D" -> Color(0xFFEF4444)
+        "??" -> Color(0xFF06B6D4)
+        else -> Color(0xFFF59E0B)
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() },
+        color = if (isSelected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        border = if (isSelected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)) else null
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Status Tag
+            Surface(
+                color = statusColor.copy(alpha = 0.15f),
+                shape = RoundedCornerShape(4.dp),
+                border = BorderStroke(1.dp, statusColor.copy(alpha = 0.5f))
+            ) {
+                Text(
+                    text = file.status,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = statusColor,
+                    fontSize = 10.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // File path and name
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = file.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val dir = file.path.substringBeforeLast("/", "")
+                if (dir.isNotBlank()) {
+                    Text(
+                        text = dir,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Stat badge (+ -)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (file.additions > 0) {
+                    Text("+${file.additions}", fontSize = 10.sp, color = Color(0xFF10B981), fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.width(3.dp))
+                }
+                if (file.deletions > 0) {
+                    Text("-${file.deletions}", fontSize = 10.sp, color = Color(0xFFEF4444), fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // Revert button if in working tree
+            if (canRevert) {
+                IconButton(
+                    onClick = onRevert,
+                    modifier = Modifier.size(24.dp).padding(start = 2.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Restore,
+                        contentDescription = "撤销",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DiffViewerTab(
+    file: GitDiffFile?,
+    onCopyDiff: () -> Unit
+) {
+    if (file == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("请在左侧选择要查看差异的文件", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // File bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = file.path,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "+${file.additions} -${file.deletions}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            TextButton(
+                onClick = onCopyDiff,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("复制 Diff", fontSize = 12.sp)
+            }
+        }
+
+        // Diff Lines Content
+        val diffLines = remember(file.diff) {
+            if (file.diff.isBlank()) emptyList() else file.diff.lines()
+        }
+
+        if (diffLines.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("该文件无差异或为新建/空文件/二进制文件", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            val hScroll = rememberScrollState()
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0D1117))
+                    .horizontalScroll(hScroll)
+            ) {
+                items(diffLines) { line ->
+                    DiffLineRow(line = line)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DiffLineRow(line: String) {
+    val (bgColor, textColor, isBold) = when {
+        line.startsWith("@@") -> Triple(Color(0x1F38BDF8), Color(0xFF38BDF8), true)
+        line.startsWith("+") && !line.startsWith("+++") -> Triple(Color(0x2E10B981), Color(0xFF34D399), false)
+        line.startsWith("-") && !line.startsWith("---") -> Triple(Color(0x2EEF4444), Color(0xFFF87171), false)
+        line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ") -> Triple(Color(0x1A6B7280), Color(0xFF9CA3AF), true)
+        else -> Triple(Color.Transparent, Color(0xFFC9D1D9), false)
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bgColor)
+            .padding(horizontal = 8.dp, vertical = 1.dp)
+    ) {
+        Text(
+            text = line.ifEmpty { " " },
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.5.sp,
+            lineHeight = 16.sp,
+            color = textColor,
+            fontWeight = if (isBold) FontWeight.SemiBold else FontWeight.Normal
+        )
+    }
+}
+
+@Composable
+fun SourceViewerTab(
+    filePath: String,
+    content: String?,
+    onCopyContent: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = filePath,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+            if (!content.isNullOrBlank()) {
+                TextButton(
+                    onClick = onCopyContent,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("复制代码", fontSize = 12.sp)
+                }
+            }
+        }
+
+        if (content == null) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("正在读取文件源码...", style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            val lines = remember(content) { content.lines() }
+            val hScroll = rememberScrollState()
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0D1117))
+                    .horizontalScroll(hScroll)
+            ) {
+                items(lines.size) { idx ->
+                    val lineNum = idx + 1
+                    val lineText = lines[idx]
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = String.format("%4d ", lineNum),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = Color(0xFF6E7681),
+                            modifier = Modifier.width(42.dp)
+                        )
+                        Text(
+                            text = lineText.ifEmpty { " " },
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.5.sp,
+                            color = Color(0xFFC9D1D9)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AiReviewTab(
+    state: CodeReviewState,
+    projectName: String,
+    onStartAiReview: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Grok Review Header Card
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Grok 智能代码审查体系 (Review Agent)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "基于 Grok Build 原生 /review 规范，全方位审查项目的改动，并由 Grok 智能体直接在当前会话中输出针对性优化方案和代码整改片段。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                if (state.isReviewing) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Grok 正在会话中生成代码审查分析...", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onDismiss,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("关闭面板，进入对话查看实时输出")
+                            }
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = onStartAiReview,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("立即开始 Grok 深度审查 (${if (state.scope == "working") "工作区改动" else "最新提交"})", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Four Review Pillars Checklist
+        Text(
+            text = "审查维度与标准 (Review Rubric)",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ReviewPillarCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.AccountTree,
+                title = "1. 架构与模块化",
+                description = "检查设计模式、是否破坏现有分层、是否过度设计、模块高内聚低耦合。"
+            )
+            ReviewPillarCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.BugReport,
+                title = "2. 缺陷与边界",
+                description = "检查空安全、越界访问、并发与竞态、资源泄露以及异常分支处理。"
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ReviewPillarCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.CleaningServices,
+                title = "3. 代码异味与冗余",
+                description = "识别冗余分支、死代码、深层嵌套、魔数以及不必要的全局状态。"
+            )
+            ReviewPillarCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.Bolt,
+                title = "4. 极简化 (Code Judo)",
+                description = "通过最简单的语言原生特性替代复杂外挂框架，实现代码行数减半但健壮性翻倍。"
+            )
+        }
+    }
+}
+
+@Composable
+fun ReviewPillarCard(
+    modifier: Modifier = Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    description: String
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(text = title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp
+            )
+        }
     }
 }
 

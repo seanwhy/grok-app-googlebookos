@@ -121,3 +121,44 @@ data class SubscriptionQuota(
     val error: String? = null
 )
 
+data class GitDiffFile(
+    val path: String,
+    val name: String,
+    val status: String = "M",
+    val statusLabel: String = "修改",
+    val additions: Int = 0,
+    val deletions: Int = 0,
+    val diff: String = ""
+)
+
+data class GitDiffResponse(
+    val status: String = "ok",
+    val isGit: Boolean = false,
+    val cwd: String = "",
+    val branch: String = "",
+    val commitId: String = "",
+    val commitMsg: String = "",
+    val hasUncommitted: Boolean = false,
+    val scope: String = "working",
+    val statSummary: String = "",
+    val files: List<GitDiffFile> = emptyList()
+)
+
+data class CodeReviewState(
+    val isGit: Boolean = false,
+    val cwd: String = "",
+    val branch: String = "",
+    val commitId: String = "",
+    val commitMsg: String = "",
+    val hasUncommitted: Boolean = false,
+    val scope: String = "auto",
+    val statSummary: String = "",
+    val files: List<GitDiffFile> = emptyList(),
+    val selectedFilePath: String? = null,
+    val selectedFileContent: String? = null,
+    val isReviewing: Boolean = false,
+    val reviewReport: String? = null,
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
+
