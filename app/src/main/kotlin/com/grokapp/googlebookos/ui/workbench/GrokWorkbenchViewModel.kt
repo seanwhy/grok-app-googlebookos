@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.grokapp.googlebookos.data.model.ProjectItem
+import com.grokapp.googlebookos.data.model.SubscriptionQuota
 import com.grokapp.googlebookos.data.model.FsDirectoryItem
 import com.grokapp.googlebookos.data.model.FsListResponse
 import com.grokapp.googlebookos.util.StorageHelper
@@ -52,6 +53,7 @@ data class WorkbenchUiState(
     val showFolderPickerDialog: Boolean = false,
     val folderPickerTarget: FolderPickerTarget = FolderPickerTarget.SWITCH_PROJECT,
     val pendingParentDir: String = StorageHelper.getDefaultCodesDir(),
+    val subscriptionQuota: SubscriptionQuota = SubscriptionQuota(),
     val errorMessage: String? = null
 )
 
@@ -91,6 +93,7 @@ class GrokWorkbenchViewModel(
                         if (!wasConnected) {
                             loadSessions()
                             loadProjects()
+                            loadSubscriptionQuota()
                         }
                         delay(8_000)
                     },
@@ -112,6 +115,21 @@ class GrokWorkbenchViewModel(
         startHeartbeatLoop()
         loadSessions()
         loadProjects()
+        loadSubscriptionQuota()
+    }
+
+    fun loadSubscriptionQuota() {
+        _uiState.update { it.copy(subscriptionQuota = it.subscriptionQuota.copy(isLoading = true)) }
+        viewModelScope.launch {
+            apiClient.getSubscriptionQuota().fold(
+                onSuccess = { quota ->
+                    _uiState.update { it.copy(subscriptionQuota = quota.copy(isLoading = false, error = null)) }
+                },
+                onFailure = { err ->
+                    _uiState.update { it.copy(subscriptionQuota = it.subscriptionQuota.copy(isLoading = false, error = err.message)) }
+                }
+            )
+        }
     }
 
     fun loadProjects() {
@@ -334,6 +352,7 @@ class GrokWorkbenchViewModel(
                     }
                     is ChatStreamEvent.ToolStart -> {
                         val tool = ToolCallInfo(
+                            id = event.id.ifEmpty { UUID.randomUUID().toString() },
                             name = event.name,
                             args = event.args,
                             status = ToolStatus.RUNNING
@@ -347,11 +366,23 @@ class GrokWorkbenchViewModel(
                         }
                     }
                     is ChatStreamEvent.ToolEnd -> {
-                        val idx = currentToolCalls.indexOfLast { it.name == event.name }
+                        val targetStatus = if (event.status.equals("failed", ignoreCase = true)) ToolStatus.FAILED else ToolStatus.SUCCESS
+                        val idx = if (event.id.isNotEmpty()) {
+                            currentToolCalls.indexOfLast { it.id == event.id }
+                        } else {
+                            currentToolCalls.indexOfLast { it.status == ToolStatus.RUNNING }
+                        }
                         if (idx != -1) {
                             currentToolCalls[idx] = currentToolCalls[idx].copy(
                                 result = event.result,
-                                status = ToolStatus.SUCCESS
+                                status = targetStatus
+                            )
+                        } else if (currentToolCalls.isNotEmpty()) {
+                            val lastRunning = currentToolCalls.indexOfLast { it.status == ToolStatus.RUNNING }
+                            val targetIdx = if (lastRunning != -1) lastRunning else currentToolCalls.size - 1
+                            currentToolCalls[targetIdx] = currentToolCalls[targetIdx].copy(
+                                result = event.result,
+                                status = targetStatus
                             )
                         }
                         updateAssistantMessage(assistantMsgId) { msg ->
@@ -364,6 +395,7 @@ class GrokWorkbenchViewModel(
                             msg.copy(isThinking = false)
                         }
                         loadSessions()
+                        loadSubscriptionQuota()
                     }
                     is ChatStreamEvent.Error -> {
                         _uiState.update {

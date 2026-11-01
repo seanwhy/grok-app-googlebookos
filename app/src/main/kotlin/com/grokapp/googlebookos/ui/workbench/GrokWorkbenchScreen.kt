@@ -49,7 +49,8 @@ import com.grokapp.googlebookos.data.model.ToolCallInfo
 import com.grokapp.googlebookos.data.model.ToolStatus
 import com.grokapp.googlebookos.data.model.ProjectItem
 import com.grokapp.googlebookos.data.model.FsDirectoryItem
-import com.grokapp.googlebookos.data.model.FsListResponse
+import com.grokapp.googlebookos.data.model.SubscriptionQuota
+import com.grokapp.googlebookos.data.model.ProductUsageItem
 import com.grokapp.googlebookos.util.StorageHelper
 import java.io.File
 import kotlinx.coroutines.launch
@@ -121,7 +122,8 @@ fun GrokWorkbenchScreen(
                         onToggleArchive = { viewModel.toggleArchive(it) },
                         onSearchChange = { viewModel.setSearchQuery(it) },
                         onShowArchivedToggle = { viewModel.setShowArchived(it) },
-                        onOpenSettings = { showServerDialog = true }
+                        onOpenSettings = { showServerDialog = true },
+                        onRefreshQuota = { viewModel.loadSubscriptionQuota() }
                     )
                 }
 
@@ -182,7 +184,8 @@ fun GrokWorkbenchScreen(
                             onToggleArchive = { viewModel.toggleArchive(it) },
                             onSearchChange = { viewModel.setSearchQuery(it) },
                             onShowArchivedToggle = { viewModel.setShowArchived(it) },
-                            onOpenSettings = { showServerDialog = true }
+                            onOpenSettings = { showServerDialog = true },
+                            onRefreshQuota = { viewModel.loadSubscriptionQuota() }
                         )
                     }
                 }
@@ -342,7 +345,8 @@ fun SidebarContent(
     onToggleArchive: (String) -> Unit,
     onSearchChange: (String) -> Unit,
     onShowArchivedToggle: (Boolean) -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onRefreshQuota: () -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
         // App Header
@@ -575,6 +579,260 @@ fun SidebarContent(
                 }
             }
         }
+
+        // Subscription Quota Card (Bottom-Left Corner)
+        SubscriptionQuotaCard(
+            quota = uiState.subscriptionQuota,
+            onRefresh = onRefreshQuota
+        )
+    }
+}
+
+@Composable
+fun SubscriptionQuotaCard(
+    quota: SubscriptionQuota,
+    onRefresh: () -> Unit
+) {
+    var isExpanded by remember { mutableStateOf(false) }
+
+    val remainingPercent = quota.creditRemainingPercent.coerceIn(0f, 100f)
+    val usedPercent = quota.creditUsagePercent.coerceIn(0f, 100f)
+
+    val statusColor = when {
+        remainingPercent >= 30f -> Color(0xFF10B981) // Emerald Green
+        remainingPercent >= 10f -> Color(0xFFF59E0B) // Amber
+        else -> Color(0xFFEF4444) // Red
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { isExpanded = !isExpanded },
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            // Header Row: Tier name, remaining percent chip, and refresh button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF38BDF8).copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = Color(0xFF38BDF8)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = quota.tier.ifBlank { "Grok 订阅" },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        if (quota.email.isNotBlank()) {
+                            Text(
+                                text = quota.email,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = statusColor.copy(alpha = 0.15f)
+                    ) {
+                        Text(
+                            text = "余 ${remainingPercent.toInt()}%",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = statusColor,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    if (quota.isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .padding(4.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else {
+                        IconButton(
+                            onClick = onRefresh,
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "刷新用量",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Progress Bar
+            LinearProgressIndicator(
+                progress = { remainingPercent / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = statusColor,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Summary Footer: Used % and reset info
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "已用 ${usedPercent.toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.5.sp
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = formatPeriodDate(quota.periodEnd),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 10.5.sp
+                    )
+                    Spacer(modifier = Modifier.width(2.dp))
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Expandable Product Breakdown
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "用量分布明细",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 10.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    if (quota.productUsage.isNotEmpty()) {
+                        quota.productUsage.forEach { item ->
+                            val prodLabel = when (item.product) {
+                                "GrokBuild" -> "Grok Build (编程智能体)"
+                                "GrokChat" -> "Grok Chat (问答)"
+                                "GrokVoice" -> "Grok Voice (语音)"
+                                else -> item.product
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = prodLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "${item.usagePercent.toInt()}%",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "暂无细项数据",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (quota.periodStart.isNotBlank() && quota.periodEnd.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "周期: ${quota.periodStart.take(10)} 至 ${quota.periodEnd.take(10)} (周度)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 9.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun formatPeriodDate(isoString: String): String {
+    if (isoString.isBlank()) return "周期刷新"
+    return try {
+        val parts = isoString.split("T")
+        if (parts.size >= 2) {
+            val date = parts[0].substringAfter("-")
+            val time = parts[1].take(5)
+            "$date $time 重置"
+        } else {
+            isoString.take(10)
+        }
+    } catch (e: Exception) {
+        "每周重置"
     }
 }
 
@@ -1030,25 +1288,37 @@ fun ThinkingAccordion(
     thinking: String,
     isThinking: Boolean
 ) {
-    var expanded by remember { mutableStateOf(isThinking) }
+    val context = LocalContext.current
+    var isExpanded by remember { mutableStateOf(isThinking) }
+
+    LaunchedEffect(isThinking) {
+        if (isThinking) {
+            isExpanded = true
+        }
+    }
 
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expanded = !expanded },
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { isExpanded = !isExpanded }
+                    .padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
                     if (isThinking) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
+                            modifier = Modifier.size(15.dp),
                             strokeWidth = 2.dp,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -1063,43 +1333,90 @@ fun ThinkingAccordion(
                         Icon(
                             Icons.Outlined.Psychology,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "深度思考过程",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = FontWeight.Medium
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold
                         )
+                    }
+
+                    if (thinking.isNotBlank()) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        ) {
+                            Text(
+                                text = "${thinking.length} 字",
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
 
-                Icon(
-                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = "Toggle",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!isThinking && thinking.isNotBlank()) {
+                        IconButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("Thinking", thinking)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "思考过程已复制", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.size(26.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "复制思考",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = "展开折叠",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
 
             AnimatedVisibility(
-                visible = expanded,
+                visible = isExpanded,
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically()
             ) {
                 Column(modifier = Modifier.padding(top = 8.dp)) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(6.dp))
-                    SelectionContainer {
-                        Text(
-                            text = thinking.ifBlank { "思考分析中..." },
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            lineHeight = 18.sp
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), RoundedCornerShape(2.dp))
                         )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        SelectionContainer(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = thinking.ifBlank { "正在整理思路..." },
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 12.5.sp,
+                                    lineHeight = 19.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        }
                     }
                 }
             }
@@ -1109,65 +1426,253 @@ fun ThinkingAccordion(
 
 @Composable
 fun ToolCallCard(tool: ToolCallInfo) {
+    val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
+
+    val (toolIcon, iconTint) = remember(tool.name) {
+        when {
+            tool.name.contains("终端") || tool.name.contains("terminal") ->
+                Icons.Default.Terminal to Color(0xFF38BDF8)
+            tool.name.contains("读取") || tool.name.contains("read") ->
+                Icons.Default.Description to Color(0xFF818CF8)
+            tool.name.contains("修改") || tool.name.contains("编辑") || tool.name.contains("replace") ->
+                Icons.Default.Edit to Color(0xFFF59E0B)
+            tool.name.contains("新建") || tool.name.contains("write") ->
+                Icons.Default.NoteAdd to Color(0xFF10B981)
+            tool.name.contains("目录") || tool.name.contains("dir") ->
+                Icons.Default.Folder to Color(0xFFFBBF24)
+            tool.name.contains("搜索") || tool.name.contains("grep") ->
+                Icons.Default.Search to Color(0xFFA78BFA)
+            tool.name.contains("联网") || tool.name.contains("web") ->
+                Icons.Default.Language to Color(0xFF34D399)
+            tool.name.contains("智能体") || tool.name.contains("agent") ->
+                Icons.Default.SmartToy to Color(0xFFEC4899)
+            tool.name.contains("计划") || tool.name.contains("plan") ->
+                Icons.Default.Assignment to Color(0xFF60A5FA)
+            else ->
+                Icons.Default.Build to Color(0xFF94A3B8)
+        }
+    }
 
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
                     .clickable { expanded = !expanded },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Code,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(iconTint.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = toolIcon,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = iconTint
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "工具: ${tool.name}",
+                        text = tool.name.ifBlank { "执行工具" },
                         style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = when (tool.status) {
-                            ToolStatus.RUNNING -> "执行中"
-                            ToolStatus.SUCCESS -> "完成"
-                            ToolStatus.FAILED -> "失败"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when (tool.status) {
-                            ToolStatus.RUNNING -> MaterialTheme.colorScheme.primary
-                            ToolStatus.SUCCESS -> Color(0xFF10B981)
-                            ToolStatus.FAILED -> MaterialTheme.colorScheme.error
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    when (tool.status) {
+                        ToolStatus.RUNNING -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 1.5.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "执行中",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
-                    )
+                        ToolStatus.SUCCESS -> {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp),
+                                tint = Color(0xFF10B981)
+                            )
+                            Text(
+                                text = "已完成",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF10B981),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        ToolStatus.FAILED -> {
+                            Icon(
+                                Icons.Default.Cancel,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                text = "失败",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
                     Icon(
                         imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        contentDescription = "展开折叠",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            AnimatedVisibility(visible = expanded) {
-                Column(modifier = Modifier.padding(top = 6.dp)) {
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
                     if (tool.args.isNotBlank()) {
-                        Text("参数: ${tool.args}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "调用参数",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                IconButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = ClipData.newPlainText("ToolArgs", tool.args)
+                                        clipboard.setPrimaryClip(clip)
+                                        Toast.makeText(context, "参数已复制", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.ContentCopy,
+                                        contentDescription = "复制参数",
+                                        modifier = Modifier.size(12.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF0D1117),
+                                border = BorderStroke(1.dp, Color(0xFF30363D)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                SelectionContainer {
+                                    Text(
+                                        text = tool.args,
+                                        modifier = Modifier.padding(8.dp),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp,
+                                        color = Color(0xFFC9D1D9)
+                                    )
+                                }
+                            }
+                        }
                     }
+
                     if (!tool.result.isNullOrBlank()) {
-                        Text("输出: ${tool.result}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "执行结果",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                IconButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = ClipData.newPlainText("ToolResult", tool.result)
+                                        clipboard.setPrimaryClip(clip)
+                                        Toast.makeText(context, "结果已复制", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.ContentCopy,
+                                        contentDescription = "复制结果",
+                                        modifier = Modifier.size(12.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF0D1117),
+                                border = BorderStroke(1.dp, Color(0xFF30363D)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                SelectionContainer {
+                                    Text(
+                                        text = tool.result,
+                                        modifier = Modifier.padding(8.dp),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp,
+                                        color = Color(0xFF7EE787)
+                                    )
+                                }
+                            }
+                        }
+                    } else if (tool.status == ToolStatus.RUNNING) {
+                        Text(
+                            text = "正在执行，等待输出...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }

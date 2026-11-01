@@ -10,6 +10,8 @@ import com.grokapp.googlebookos.data.model.FsListResponse
 import com.grokapp.googlebookos.data.model.ReasoningOption
 import com.grokapp.googlebookos.data.model.ServerStatus
 import com.grokapp.googlebookos.data.model.SessionSummary
+import com.grokapp.googlebookos.data.model.SubscriptionQuota
+import com.grokapp.googlebookos.data.model.ProductUsageItem
 import com.grokapp.googlebookos.data.model.ToolCallInfo
 import com.grokapp.googlebookos.data.model.ToolStatus
 import kotlinx.coroutines.Dispatchers
@@ -116,6 +118,53 @@ class GrokApiClient(private var baseUrl: String = "http://127.0.0.1:8088") {
         }
     }
 
+    suspend fun getSubscriptionQuota(): Result<SubscriptionQuota> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/subscription")
+                .get()
+                .build()
+
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                }
+                val bodyStr = response.body?.string() ?: "{}"
+                val json = JSONObject(bodyStr)
+
+                val products = mutableListOf<ProductUsageItem>()
+                val prodArr = json.optJSONArray("product_usage")
+                if (prodArr != null) {
+                    for (i in 0 until prodArr.length()) {
+                        val p = prodArr.getJSONObject(i)
+                        products.add(
+                            ProductUsageItem(
+                                product = p.optString("product", ""),
+                                usagePercent = p.optDouble("usage_percent", 0.0).toFloat()
+                            )
+                        )
+                    }
+                }
+
+                val quota = SubscriptionQuota(
+                    tier = json.optString("tier", "SuperGrok"),
+                    email = json.optString("email", ""),
+                    creditUsagePercent = json.optDouble("credit_usage_percent", 0.0).toFloat(),
+                    creditRemainingPercent = json.optDouble("credit_remaining_percent", 100.0).toFloat(),
+                    periodType = json.optString("period_type", "USAGE_PERIOD_TYPE_WEEKLY"),
+                    periodStart = json.optString("period_start", ""),
+                    periodEnd = json.optString("period_end", ""),
+                    productUsage = products,
+                    updatedAt = json.optString("updated_at", ""),
+                    isLoading = false
+                )
+                Result.success(quota)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun getSessions(): Result<List<SessionSummary>> = withContext(Dispatchers.IO) {
         try {
             val req = Request.Builder()
@@ -173,11 +222,29 @@ class GrokApiClient(private var baseUrl: String = "http://127.0.0.1:8088") {
                     val role = m.optString("role", "user")
                     val content = m.optString("content", "")
                     val thinking = m.optString("thinking").takeIf { it.isNotEmpty() }
+                    val toolCalls = mutableListOf<ToolCallInfo>()
+                    val tcArr = m.optJSONArray("tool_calls")
+                    if (tcArr != null) {
+                        for (j in 0 until tcArr.length()) {
+                            val tc = tcArr.getJSONObject(j)
+                            val statusStr = tc.optString("status", "SUCCESS")
+                            toolCalls.add(
+                                ToolCallInfo(
+                                    id = tc.optString("id", java.util.UUID.randomUUID().toString()),
+                                    name = tc.optString("name", "工具"),
+                                    args = tc.optString("args", ""),
+                                    result = tc.optString("result").takeIf { it.isNotEmpty() },
+                                    status = if (statusStr.equals("FAILED", ignoreCase = true)) ToolStatus.FAILED else ToolStatus.SUCCESS
+                                )
+                            )
+                        }
+                    }
                     messages.add(
                         ChatMessage(
                             role = role,
                             content = content,
-                            thinking = thinking
+                            thinking = thinking,
+                            toolCalls = toolCalls
                         )
                     )
                 }
@@ -285,14 +352,16 @@ class GrokApiClient(private var baseUrl: String = "http://127.0.0.1:8088") {
                             trySend(ChatStreamEvent.Thinking(thinkText))
                         }
                         "tool_call" -> {
-                            val tool = json.optString("tool")
+                            val toolId = json.optString("id", "")
+                            val toolTitle = json.optString("title").ifEmpty { json.optString("tool", "工具") }
                             val args = json.optString("args", "")
-                            trySend(ChatStreamEvent.ToolStart(tool, args))
+                            trySend(ChatStreamEvent.ToolStart(id = toolId, name = toolTitle, args = args))
                         }
                         "tool_result" -> {
-                            val tool = json.optString("tool", "tool")
+                            val toolId = json.optString("id", "")
+                            val statusStr = json.optString("status", "success")
                             val result = json.optString("result", "")
-                            trySend(ChatStreamEvent.ToolEnd(tool, result))
+                            trySend(ChatStreamEvent.ToolEnd(id = toolId, result = result, status = statusStr))
                         }
                         "end", "done" -> {
                             trySend(ChatStreamEvent.Done(json.optString("session_id")))

@@ -67,8 +67,8 @@ data class PermissionOption(
 sealed class ChatStreamEvent {
     data class Content(val text: String) : ChatStreamEvent()
     data class Thinking(val text: String) : ChatStreamEvent()
-    data class ToolStart(val name: String, val args: String) : ChatStreamEvent()
-    data class ToolEnd(val name: String, val result: String) : ChatStreamEvent()
+    data class ToolStart(val id: String = "", val name: String, val args: String = "") : ChatStreamEvent()
+    data class ToolEnd(val id: String = "", val name: String = "", val result: String = "", val status: String = "success") : ChatStreamEvent()
     data class Done(val fullText: String? = null) : ChatStreamEvent()
     data class Error(val message: String) : ChatStreamEvent()
 }
@@ -101,3 +101,23 @@ data class CreateProjectRequest(
     val initGit: Boolean = true,
     val createReadme: Boolean = true
 )
+
+data class ProductUsageItem(
+    val product: String,
+    val usagePercent: Float
+)
+
+data class SubscriptionQuota(
+    val tier: String = "SuperGrok",
+    val email: String = "",
+    val creditUsagePercent: Float = 0f,
+    val creditRemainingPercent: Float = 100f,
+    val periodType: String = "USAGE_PERIOD_TYPE_WEEKLY",
+    val periodStart: String = "",
+    val periodEnd: String = "",
+    val productUsage: List<ProductUsageItem> = emptyList(),
+    val updatedAt: String = "",
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
+
