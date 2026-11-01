@@ -126,6 +126,9 @@ object ChromeHelper {
         if (lowerCode.contains("<head>") && lowerCode.contains("<body>")) {
             return true
         }
+        if (lowerCode.contains("<svg") && lowerCode.contains("</svg>")) {
+            return true
+        }
         return false
     }
 }

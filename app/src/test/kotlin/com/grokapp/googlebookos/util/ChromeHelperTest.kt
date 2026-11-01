@@ -41,6 +41,8 @@ class ChromeHelperTest {
         assertTrue(ChromeHelper.isHtmlOrWebCode("htm", "<div class='container'>Test</div>"))
         assertTrue(ChromeHelper.isHtmlOrWebCode("", "<!DOCTYPE html><html><body>Test</body></html>"))
         assertTrue(ChromeHelper.isHtmlOrWebCode("xml", "<html><head><title>Page</title></head></html>"))
+        assertTrue(ChromeHelper.isHtmlOrWebCode("svg", "<svg width='100' height='100'><circle cx='50' cy='50' r='40'/></svg>"))
+        assertTrue(ChromeHelper.isHtmlOrWebCode("xml", "<svg viewBox='0 0 100 100'><path d='M10 10'/></svg>"))
         
         assertFalse(ChromeHelper.isHtmlOrWebCode("kotlin", "fun main() { println(\"test\") }"))
         assertFalse(ChromeHelper.isHtmlOrWebCode("python", "import sys\nprint('hello')"))
