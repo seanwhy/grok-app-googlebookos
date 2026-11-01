@@ -23,6 +23,8 @@ import com.grokapp.googlebookos.data.model.CodeReviewState
 import com.grokapp.googlebookos.data.model.FsDirectoryItem
 import com.grokapp.googlebookos.data.model.FsListResponse
 import com.grokapp.googlebookos.util.StorageHelper
+import com.grokapp.googlebookos.util.ChromeHelper
+import android.content.Context
 import java.io.File
 import java.util.UUID
 
@@ -645,5 +647,20 @@ class GrokWorkbenchViewModel(
         }
         
         sendMessage(prompt)
+    }
+
+    fun previewHtmlInChrome(context: Context, html: String, title: String = "Web 页面预览") {
+        viewModelScope.launch {
+            apiClient.createWebPreview(html, title).fold(
+                onSuccess = { previewUrl ->
+                    ChromeHelper.openUrl(context, previewUrl)
+                },
+                onFailure = { err ->
+                    _uiState.update { state ->
+                        state.copy(errorMessage = "生成网页预览失败: ${err.message}")
+                    }
+                }
+            )
+        }
     }
 }

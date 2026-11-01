@@ -57,6 +57,13 @@ import com.grokapp.googlebookos.data.model.GitDiffFile
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.grokapp.googlebookos.util.StorageHelper
+import com.grokapp.googlebookos.util.ChromeHelper
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -153,6 +160,7 @@ fun GrokWorkbenchScreen(
                     onOpenCodeReview = { viewModel.openCodeReview() },
                     onToggleTimeline = { viewModel.toggleActivityTimeline() },
                     onSelectTool = { viewModel.selectToolCall(it) },
+                    onPreviewInChrome = { html -> viewModel.previewHtmlInChrome(context, html) },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -218,6 +226,7 @@ fun GrokWorkbenchScreen(
                     onOpenCodeReview = { viewModel.openCodeReview() },
                     onToggleTimeline = { viewModel.toggleActivityTimeline() },
                     onSelectTool = { viewModel.selectToolCall(it) },
+                    onPreviewInChrome = { html -> viewModel.previewHtmlInChrome(context, html) },
                     onRenameCurrent = {
                         uiState.currentSessionId?.let { sid ->
                             renameInputText = uiState.currentSessionTitle
@@ -977,6 +986,7 @@ fun MainChatArea(
     onOpenCodeReview: () -> Unit = {},
     onToggleTimeline: () -> Unit = {},
     onSelectTool: (String?) -> Unit = {},
+    onPreviewInChrome: (String) -> Unit = {},
     onRenameCurrent: () -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
@@ -1160,7 +1170,8 @@ fun MainChatArea(
                                 selectedToolId = uiState.selectedToolCallId,
                                 onSelectTool = { tool -> onSelectTool(tool.id) },
                                 onToggleRightPanel = onToggleTimeline,
-                                isRightPanelOpen = isWideScreen && uiState.showActivityTimeline
+                                isRightPanelOpen = isWideScreen && uiState.showActivityTimeline,
+                                onPreviewInChrome = onPreviewInChrome
                             )
                         }
                         item { Spacer(modifier = Modifier.height(16.dp)) }
@@ -1323,14 +1334,99 @@ fun WelcomeHero(
 }
 
 @Composable
+fun LocalWebServerBanner(
+    urls: List<String>,
+    onOpenUrl: (String) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Language,
+                        contentDescription = "Web",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "本地 Web 服务已就绪",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "已检测到正在运行的本地服务，可在 Google Chrome 中直接测试与交互",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                urls.forEach { url ->
+                    Button(
+                        onClick = { onOpenUrl(url) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.OpenInBrowser,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "在 Chrome 中打开 $url",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ChatMessageBubble(
     message: ChatMessage,
     selectedToolId: String? = null,
     onSelectTool: (ToolCallInfo) -> Unit = {},
     onToggleRightPanel: () -> Unit = {},
-    isRightPanelOpen: Boolean = false
+    isRightPanelOpen: Boolean = false,
+    onPreviewInChrome: (String) -> Unit = {}
 ) {
+    val context = LocalContext.current
     val isUser = message.role == "user"
+    val localUrls = remember(message.content) {
+        ChromeHelper.extractUrls(message.content).filter { ChromeHelper.isLocalWebUrl(it) }
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1391,10 +1487,20 @@ fun ChatMessageBubble(
                     Box(modifier = Modifier.padding(14.dp)) {
                         MarkdownMessageContent(
                             text = message.content.ifBlank { "..." },
-                            isUser = isUser
+                            isUser = isUser,
+                            onPreviewInChrome = onPreviewInChrome
                         )
                     }
                 }
+            }
+
+            // Local Web Server Banner: If local dev server / local URL detected
+            if (!isUser && localUrls.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LocalWebServerBanner(
+                    urls = localUrls,
+                    onOpenUrl = { ChromeHelper.openUrl(context, it) }
+                )
             }
         }
 
@@ -2178,6 +2284,9 @@ fun TimelineStepCard(
                         }
 
                         if (!tool.result.isNullOrBlank()) {
+                            val resultLocalUrls = remember(tool.result) {
+                                ChromeHelper.extractUrls(tool.result).filter { ChromeHelper.isLocalWebUrl(it) }
+                            }
                             Column {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -2195,6 +2304,28 @@ fun TimelineStepCard(
                                         modifier = Modifier.size(20.dp)
                                     ) {
                                         Icon(Icons.Default.ContentCopy, contentDescription = "复制结果", modifier = Modifier.size(11.dp))
+                                    }
+                                }
+                                if (resultLocalUrls.isNotEmpty()) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState())
+                                            .padding(bottom = 6.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        resultLocalUrls.forEach { localUrl ->
+                                            FilledTonalButton(
+                                                onClick = { ChromeHelper.openUrl(context, localUrl) },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                shape = RoundedCornerShape(6.dp),
+                                                modifier = Modifier.height(26.dp)
+                                            ) {
+                                                Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(12.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("在 Chrome 中打开: $localUrl", fontSize = 10.5.sp, fontWeight = FontWeight.Medium)
+                                            }
+                                        }
                                     }
                                 }
                                 Surface(
@@ -2455,17 +2586,31 @@ fun ToolCallCard(tool: ToolCallInfo) {
 }
 
 @Composable
-fun MarkdownMessageContent(text: String, isUser: Boolean) {
+fun MarkdownMessageContent(
+    text: String,
+    isUser: Boolean,
+    onPreviewInChrome: ((String) -> Unit)? = null
+) {
     val context = LocalContext.current
     val chunks = remember(text) { parseCodeBlocks(text) }
+    val linkColor = if (isUser) MaterialTheme.colorScheme.inversePrimary else MaterialTheme.colorScheme.primary
 
     SelectionContainer {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             chunks.forEach { chunk ->
                 when (chunk) {
                     is ContentChunk.Text -> {
+                        val annotated = remember(chunk.content, linkColor) {
+                            buildMarkdownAnnotatedString(
+                                text = chunk.content,
+                                linkColor = linkColor,
+                                onLinkClick = { url ->
+                                    ChromeHelper.openUrl(context, url)
+                                }
+                            )
+                        }
                         Text(
-                            text = chunk.content,
+                            text = annotated,
                             style = MaterialTheme.typography.bodyMedium,
                             lineHeight = 22.sp
                         )
@@ -2479,11 +2624,69 @@ fun MarkdownMessageContent(text: String, isUser: Boolean) {
                                 val clip = ClipData.newPlainText("Code", chunk.code)
                                 clipboard.setPrimaryClip(clip)
                                 Toast.makeText(context, "代码已复制到剪贴板", Toast.LENGTH_SHORT).show()
-                            }
+                            },
+                            onPreviewInChrome = onPreviewInChrome
                         )
                     }
                 }
             }
+        }
+    }
+}
+
+fun buildMarkdownAnnotatedString(
+    text: String,
+    linkColor: Color,
+    onLinkClick: (String) -> Unit
+): AnnotatedString {
+    return buildAnnotatedString {
+        val linkPattern = "(?:\\[([^\\]]+)\\]\\(([^\\)]+)\\))|(https?://[^\\s)\\]>\"']+)|((?:localhost|127\\.0\\.0\\.1):\\d+[^\\s)\\]>\"']*)".toRegex(RegexOption.IGNORE_CASE)
+        var lastIdx = 0
+
+        for (match in linkPattern.findAll(text)) {
+            val start = match.range.first
+            val end = match.range.last + 1
+
+            if (start > lastIdx) {
+                append(text.substring(lastIdx, start))
+            }
+
+            val mdTitle = match.groups[1]?.value
+            val mdUrl = match.groups[2]?.value
+            val rawHttpUrl = match.groups[3]?.value
+            val rawLocalhostUrl = match.groups[4]?.value
+
+            val (displayText, targetUrl) = when {
+                mdTitle != null && mdUrl != null -> Pair(mdTitle, ChromeHelper.normalizeUrl(mdUrl))
+                rawHttpUrl != null -> Pair(rawHttpUrl, ChromeHelper.normalizeUrl(rawHttpUrl))
+                rawLocalhostUrl != null -> Pair(rawLocalhostUrl, ChromeHelper.normalizeUrl(rawLocalhostUrl))
+                else -> Pair(match.value, ChromeHelper.normalizeUrl(match.value))
+            }
+
+            pushLink(
+                LinkAnnotation.Url(
+                    url = targetUrl,
+                    styles = TextLinkStyles(
+                        style = SpanStyle(
+                            color = linkColor,
+                            textDecoration = TextDecoration.Underline,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    ),
+                    linkInteractionListener = { annotation ->
+                        val url = (annotation as LinkAnnotation.Url).url
+                        onLinkClick(url)
+                    }
+                )
+            )
+            append(displayText)
+            pop()
+
+            lastIdx = end
+        }
+
+        if (lastIdx < text.length) {
+            append(text.substring(lastIdx))
         }
     }
 }
@@ -2524,8 +2727,11 @@ fun parseCodeBlocks(raw: String): List<ContentChunk> {
 fun CodeBlockView(
     lang: String,
     code: String,
-    onCopy: () -> Unit
+    onCopy: () -> Unit,
+    onPreviewInChrome: ((String) -> Unit)? = null
 ) {
+    val isWeb = remember(lang, code) { ChromeHelper.isHtmlOrWebCode(lang, code) }
+
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = Color(0xFF1E1E1E),
@@ -2540,19 +2746,56 @@ fun CodeBlockView(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = lang.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.LightGray,
-                    fontWeight = FontWeight.Bold
-                )
-                TextButton(
-                    onClick = onCopy,
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("复制", color = Color.LightGray, fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = lang.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.LightGray,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (isWeb) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = Color(0xFF10B981).copy(alpha = 0.2f),
+                            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "Web 页面",
+                                fontSize = 10.sp,
+                                color = Color(0xFF10B981),
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isWeb && onPreviewInChrome != null) {
+                        FilledTonalButton(
+                            onClick = { onPreviewInChrome(code) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            ),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(13.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("在 Chrome 中运行", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    TextButton(
+                        onClick = onCopy,
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("复制", color = Color.LightGray, fontSize = 12.sp)
+                    }
                 }
             }
             Text(

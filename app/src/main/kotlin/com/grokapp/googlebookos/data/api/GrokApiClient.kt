@@ -579,5 +579,32 @@ class GrokApiClient(private var baseUrl: String = "http://127.0.0.1:8088") {
             Result.failure(e)
         }
     }
+
+    suspend fun createWebPreview(html: String, title: String = "Web 页面预览"): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val jsonBody = JSONObject().apply {
+                put("html", html)
+                put("title", title)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/web/preview")
+                .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@withContext Result.failure(IOException("Server error: ${response.code}"))
+                val bodyStr = response.body?.string() ?: "{}"
+                val json = JSONObject(bodyStr)
+                val url = json.optString("url", "")
+                if (url.isNotEmpty()) {
+                    Result.success(url)
+                } else {
+                    Result.failure(IOException("No preview url returned"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }
 
